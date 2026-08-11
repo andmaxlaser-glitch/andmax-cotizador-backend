@@ -1,4 +1,5 @@
-fastapi
-uvicorn
-mercadopago>=2.1.0
-ezdxf
+fastapi>=0.100.0,<1.0.0
+uvicorn[standard]>=0.20.0
+mercadopago>=2.0.0
+ezdxf>=1.1.0,<1.2.0
+python-multipart
