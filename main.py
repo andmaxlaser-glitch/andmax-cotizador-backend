@@ -1,13 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import ezdxf
 import math
 import tempfile
 import os
+import mercadopago
 
 app = FastAPI(title="Andmax Laser API")
 
-# Permitir peticiones desde tu frontend en GitHub Pages
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,8 +16,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MATRIZ DE PRECIOS BASE DE ANDMAX
-# Podes modificar los valores de cada material/espesor cuando cambien tus costos
+# Inicializar Mercado Pago
+mp_token = os.environ.get("MP_ACCESS_TOKEN", "")
+sdk = mercadopago.SDK(mp_token) if mp_token else None
+
 TARIFAS = {
     "mdf": {
         3: {"corte_m": 400, "piercing": 30, "m2_mat": 4500},
@@ -50,7 +52,7 @@ TARIFAS = {
     }
 }
 
-COSTO_SETUP_BASE = 2000.0  # Tasa fija por preparación de trabajo (ARS)
+COSTO_SETUP_BASE = 2000.0
 
 @app.get("/")
 def read_root():
@@ -64,22 +66,17 @@ async def cotizar_dxf(
     incluye_material: str = Form("true")
 ):
     es_material_provisto = incluye_material.lower() == "true"
-    
-    # Obtener tarifas del material seleccionado
     mat_tarifas = TARIFAS.get(material, {})
     
-    # Si el material no existe en la tabla, usamos una tarifa por defecto
     if not mat_tarifas:
         tarifa = {"corte_m": 1000, "piercing": 100, "m2_mat": 20000}
     else:
-        # Si el espesor solicitado está en la lista se usa, sino se toma el primero disponible
         if espesor in mat_tarifas:
             tarifa = mat_tarifas[espesor]
         else:
             primer_espesor = list(mat_tarifas.keys())[0]
             tarifa = mat_tarifas[primer_espesor]
 
-    # Guardar DXF en archivo temporal
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
         contents = await file.read()
         tmp.write(contents)
@@ -119,7 +116,6 @@ async def cotizar_dxf(
 
         longitud_m = longitud_mm / 1000.0
 
-        # Dimensiones
         ancho_m = max(0.0, (max_x - min_x) / 1000.0) if max_x != float('-inf') else 0.1
         alto_m = max(0.0, (max_y - min_y) / 1000.0) if max_y != float('-inf') else 0.1
         
@@ -146,3 +142,33 @@ async def cotizar_dxf(
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+@app.post("/crear_pago")
+async def crear_pago(
+    titulo: str = Form(...),
+    monto: float = Form(...)
+):
+    if not sdk:
+        raise HTTPException(status_code=500, detail="Mercado Pago no está configurado.")
+
+    preference_data = {
+        "items": [
+            {
+                "title": f"Corte Laser Andmax: {titulo}",
+                "quantity": 1,
+                "unit_price": float(monto),
+                "currency_id": "ARS"
+            }
+        ],
+        "back_urls": {
+            "success": "https://andmax.com.ar",
+            "failure": "https://andmax.com.ar",
+            "pending": "https://andmax.com.ar"
+        },
+        "auto_return": "approved"
+    }
+
+    preference_response = sdk.preference().create(preference_data)
+    preference = preference_response["response"]
+
+    return {"init_point": preference.get("init_point")}
