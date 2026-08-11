@@ -105,24 +105,8 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG vectorial visible probando extracción directa y addon drawing como fallback."""
+    """Genera un SVG liviano usando únicamente las utilidades nativas de ezdxf."""
     try:
-        # Intento 1: Renderizado mediante Addon Drawing (compatible con cualquier entidad DXF)
-        try:
-            out = io.StringIO()
-            backend = SVGBackend()
-            ctx = RenderContext(doc)
-            ctx.set_current_layout(msp)
-            Frontend(ctx, backend).draw_layout(msp)
-            svg_string = backend.get_string()
-            if svg_string and "<svg" in svg_string:
-                # Ajuste de estilo para que encaje en el contenedor del frontend
-                svg_string = svg_string.replace("<svg", '<svg style="width: 100%; max-height: 250px; background-color: #000; border-radius: 6px;"')
-                return svg_string
-        except Exception:
-            pass
-
-        # Intento 2: Extracción manual por delimitación de coordenadas (Fallback)
         extents = bbox.extents(msp)
         if not extents.has_data:
             return "<p style='color:#a0a0a0; font-size:12px;'>DXF sin vectores visibles</p>"
@@ -134,7 +118,7 @@ def generar_svg_preview(doc, msp) -> str:
         height = max_y - min_y
 
         if width <= 0 or height <= 0:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones de plano inválidas</p>"
+            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas</p>"
 
         margin = max(width, height) * 0.05
         vb_x = min_x - margin
@@ -142,12 +126,15 @@ def generar_svg_preview(doc, msp) -> str:
         vb_w = width + (margin * 2)
         vb_h = height + (margin * 2)
 
-        stroke_width = max(max(width, height) / 200.0, 0.5)
+        stroke_width = max(max(width, height) / 180.0, 0.8)
         paths_svg = []
 
+        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
         entities_to_process = list(msp.virtual_entities()) or list(msp)
 
         for entity in entities_to_process:
+            if entity.dxftype() not in ENTIDADES_CORTE:
+                continue
             stroke_attr = f'stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round"'
             try:
                 p = path.make_path(entity)
@@ -155,19 +142,10 @@ def generar_svg_preview(doc, msp) -> str:
                 if d_str and d_str.strip():
                     paths_svg.append(f'<path d="{d_str}" {stroke_attr} />')
             except Exception:
-                try:
-                    dxftype = entity.dxftype()
-                    if dxftype == 'LINE':
-                        s, e = entity.dxf.start, entity.dxf.end
-                        paths_svg.append(f'<line x1="{s.x:.2f}" y1="{s.y:.2f}" x2="{e.x:.2f}" y2="{e.y:.2f}" {stroke_attr} />')
-                    elif dxftype == 'CIRCLE':
-                        c, r = entity.dxf.center, entity.dxf.radius
-                        paths_svg.append(f'<circle cx="{c.x:.2f}" cy="{c.y:.2f}" r="{r:.2f}" {stroke_attr} />')
-                except Exception:
-                    continue
+                continue
 
         if not paths_svg:
-            return "<p style='color:#a0a0a0; font-size:12px;'>No se detectaron entidades de corte compatibles</p>"
+            return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles</p>"
 
         return f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
             xmlns="http://www.w3.org/2000/svg" 
@@ -181,7 +159,6 @@ def generar_svg_preview(doc, msp) -> str:
     except Exception as e:
         print(f"Error generando SVG: {e}")
         return "<p style='color:#a0a0a0; font-size:12px;'>Vista previa no disponible</p>"
-
 
 def enviar_email_notificacion(email_cliente: str, filepath: str, material: str, espesor: str, metros: str, piercings: str, monto: str):
     if not SMTP_EMAIL or not SMTP_PASSWORD:
