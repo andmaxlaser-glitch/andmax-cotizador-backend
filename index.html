@@ -128,11 +128,27 @@
         </div>
 
         <!-- SECCIÓN DEL CARRITO DE COMPRAS -->
+        <!-- SECCIÓN DEL CARRITO DE COMPRAS Y ENVÍO -->
         <div id="carrito-section">
             <h3 style="color: #fff; margin-top: 0; font-size: 1.1rem;">🛒 Tu Carrito de Cotizaciones</h3>
             
             <div id="carrito-items" style="margin-bottom: 12px;">
                 <p style="color: var(--text-muted); font-size: 13px; margin: 0;">El carrito está vacío. Cotiza y agrega archivos para pagar todo junto.</p>
+            </div>
+
+            <!-- Opciones de Envío / Retiro -->
+            <div id="opciones-envio" style="display: none; margin-bottom: 15px; padding-top: 10px; border-top: 1px solid var(--border);">
+                <label style="margin-bottom: 6px; font-weight: bold; color: #fff;">Método de entrega:</label>
+                <div style="display: flex; gap: 15px; font-size: 14px; margin-top: 5px;">
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text);">
+                        <input type="radio" name="tipoEnvio" value="retiro" checked onchange="actualizarTotalCarrito()" style="width: auto;"> 
+                        Retiro por el taller (Gratis)
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text);">
+                        <input type="radio" name="tipoEnvio" value="envio" onchange="actualizarTotalCarrito()" style="width: auto;"> 
+                        Envío a domicilio ($5.000)
+                    </label>
+                </div>
             </div>
 
             <div id="carrito-resumen" style="border-top: 1px solid var(--border); padding-top: 12px; display: none;">
@@ -143,7 +159,6 @@
                 <button type="button" id="btnPagarCarrito" style="background:#009ee3; margin-top: 0;">Pagar Todo con Mercado Pago</button>
             </div>
         </div>
-    </div>
 
     <script>
         let ultimaCotizacionActual = null;
