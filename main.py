@@ -130,11 +130,76 @@ async def cotizar(
 
         metros_corte = round(total_length_mm / 1000.0, 2)
 
-        # Cálculo de tarifas de corte
-        costo_mecanizado = round(metros_corte * 1200 + piercings * 50, 2)
-        costo_material = round(metros_corte * 800, 2) if incluye_material else 0.0
-        costo_setup = 1500.0
-        total_estimado = round(costo_mecanizado + costo_material + costo_setup, 2)
+        # TABLA DE TARIFAS REALES POR METRO DE CORTE (ARS)
+        TARIFAS_CORTE = {
+            "mdf": {
+                "1": 600.0,
+                "2": 700.0,
+                "3": 800.0,
+                "5": 900.0,
+                "8": 1000.0,
+                "10": 1200.0
+            },
+            "acrilico": {
+                "1": 800.0,
+                "2": 900.0,
+                "3": 1000.0,
+                "4": 1100.0,
+                "5": 1200.0,
+                "6": 1400.0,
+                "8": 1600.0,
+                "10": 1800.0
+            },
+            "acero_carbono": {
+                "1": 8500.0,
+                "2": 9350.0,
+                "3": 10285.0,
+                "4": 11313.0,
+                "5": 12444.0,
+                "6": 13689.0,
+                "8": 15058.0,
+                "10": 16564.0,
+                "12": 18220.0
+            },
+            "acero_inoxidable": {
+                "1": 8500.0,
+                "2": 9350.0,
+                "3": 10285.0,
+                "4": 11313.0,
+                "5": 12444.0,
+                "6": 13689.0,
+                "8": 15058.0,
+                "10": 16564.0,
+                "12": 18220.0
+            },
+            "aluminio": {
+                "1": 8500.0,
+                "2": 9350.0,
+                "3": 10285.0,
+                "4": 11313.0,
+                "5": 12444.0,
+                "6": 13689.0,
+                "8": 15058.0,
+                "10": 16564.0,
+                "12": 18220.0
+            }
+        }
+
+        # Normalizar el nombre del material a minúsculas y sin espacios
+        mat_key = material.strip().lower()
+
+        # Obtener tarifa dinámica de corte por metro según material y espesor
+        tarifa_material = TARIFAS_CORTE.get(mat_key, {})
+        precio_metro = tarifa_material.get(str(espesor), 800.0)
+
+        # Costos fijos adicionales
+        PRECIO_PIERCING = 50.0   # Valor por perforación inicial
+        COSTO_SETUP = 1500.0      # Preparación / Puesta a punto
+
+        # Cálculos finales
+        costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
+        costo_material = round(metros_corte * 800.0, 2) if incluye_material else 0.0
+        total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
 
         return {
             "archivo": file.filename,
@@ -143,7 +208,7 @@ async def cotizar(
             "piercings": piercings,
             "costo_mecanizado": costo_mecanizado,
             "costo_material": costo_material,
-            "costo_setup": costo_setup,
+            "costo_setup": COSTO_SETUP,
             "total_estimado": total_estimado,
             "material": material,
             "espesor": espesor
