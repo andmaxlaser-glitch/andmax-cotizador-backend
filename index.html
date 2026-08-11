@@ -34,7 +34,7 @@
         h1 { font-size: 1.4rem; text-align: center; margin-bottom: 20px; color: var(--accent); }
         .form-group { margin-bottom: 16px; }
         label { display: block; font-size: 0.9rem; margin-bottom: 6px; color: var(--text-muted); }
-        select, input[type="file"] {
+        select, input[type="file"], input[type="text"] {
             width: 100%;
             padding: 10px;
             border-radius: 6px;
@@ -64,6 +64,12 @@
         .price { font-size: 1.5rem; color: #4caf50; font-weight: bold; text-align: center; margin: 12px 0; }
         .info-adicional-pieza { margin-top: 12px; padding-top: 10px; border-top: 1px solid #333; font-size: 14px; color: #ccc; }
         .info-adicional-pieza p { margin: 6px 0; }
+        
+        /* Estilos del Carrito */
+        #carrito-section { margin-top: 30px; padding: 16px; background: #1a1a1a; border-radius: 8px; border: 1px solid var(--border); }
+        .carrito-item { display: flex; justify-content: space-between; align-items: center; background: #222; padding: 10px; margin-bottom: 8px; border-radius: 6px; font-size: 13px; color: #fff; }
+        .btn-eliminar-item { background: transparent; color: #ef4444; border: none; cursor: pointer; font-size: 12px; margin-top: 4px; width: auto; padding: 0; }
+        .btn-eliminar-item:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -106,6 +112,7 @@
 
         <div id="result">
             <div id="preview"></div>
+            <p><strong>Archivo:</strong> <span id="resArchivoNombre"></span></p>
             <p><strong>Metros de corte:</strong> <span id="resMetros"></span> m</p>
             <p><strong>Perforaciones:</strong> <span id="resPiercings"></span></p>
             
@@ -115,12 +122,32 @@
             </div>
 
             <div class="price">$<span id="resTotal"></span> ARS</div>
-            <button id="btnPagar" style="background:#009ee3;">Pagar con Mercado Pago</button>
+            
+            <!-- Botón para añadir la cotización actual al carrito -->
+            <button type="button" id="btnAgregarCarrito" style="background:#28a745; margin-top: 5px;">➕ Agregar este archivo al Carrito</button>
+        </div>
+
+        <!-- SECCIÓN DEL CARRITO DE COMPRAS -->
+        <div id="carrito-section">
+            <h3 style="color: #fff; margin-top: 0; font-size: 1.1rem;">🛒 Tu Carrito de Cotizaciones</h3>
+            
+            <div id="carrito-items" style="margin-bottom: 12px;">
+                <p style="color: var(--text-muted); font-size: 13px; margin: 0;">El carrito está vacío. Cotiza y agrega archivos para pagar todo junto.</p>
+            </div>
+
+            <div id="carrito-resumen" style="border-top: 1px solid var(--border); padding-top: 12px; display: none;">
+                <div style="display: flex; justify-content: space-between; color: #fff; font-size: 16px; font-weight: bold; margin-bottom: 12px;">
+                    <span>Total Carrito:</span>
+                    <span id="carrito-total-precio" style="color: #4caf50;">$0.00</span>
+                </div>
+                <button type="button" id="btnPagarCarrito" style="background:#009ee3; margin-top: 0;">Pagar Todo con Mercado Pago</button>
+            </div>
         </div>
     </div>
 
     <script>
-        let currentQuoteId = null;
+        let ultimaCotizacionActual = null;
+        let carritoItems = [];
 
         document.getElementById('quoteForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -129,7 +156,8 @@
             btn.innerText = 'Procesando DXF...';
 
             const formData = new FormData();
-            formData.append('file', document.getElementById('file').files[0]);
+            const fileInput = document.getElementById('file');
+            formData.append('file', fileInput.files[0]);
             formData.append('material', document.getElementById('material').value);
             formData.append('espesor', document.getElementById('espesor').value);
             formData.append('incluye_material', document.getElementById('incluye_material').checked);
@@ -140,7 +168,13 @@
 
                 if (!res.ok) throw new Error(data.detail || 'Error en el servidor');
 
-                currentQuoteId = data.quote_id;
+                // Guardamos el objeto completo devuelto por el backend
+                ultimaCotizacionActual = {
+                    ...data,
+                    archivo_nombre: fileInput.files[0].name
+                };
+
+                document.getElementById('resArchivoNombre').innerText = fileInput.files[0].name;
                 document.getElementById('resMetros').innerText = data.metros_corte;
                 document.getElementById('resPiercings').innerText = data.piercings;
                 document.getElementById('lbl-dimensiones').innerText = `${data.ancho_mm} x ${data.alto_mm}`;
@@ -156,26 +190,84 @@
             }
         });
 
-        document.getElementById('btnPagar').addEventListener('click', async () => {
-            if (!currentQuoteId) return;
-            const btn = document.getElementById('btnPagar');
-            btn.disabled = true;
-            btn.innerText = 'Generando link de pago...';
+        // Botón para agregar al carrito
+        document.getElementById('btnAgregarCarrito').addEventListener('click', () => {
+            if (!ultimaCotizacionActual) return;
 
+            // Evitar duplicados exactos usando el quote_id
+            if (carritoItems.some(item => item.quote_id === ultimaCotizacionActual.quote_id)) {
+                alert("Este archivo ya se encuentra agregado en el carrito.");
+                return;
+            }
+
+            carritoItems.push(ultimaCotizacionActual);
+            actualizarVistaCarrito();
+            alert("¡Archivo agregado al carrito correctamente!");
+        });
+
+        function actualizarVistaCarrito() {
+            const contenedor = document.getElementById('carrito-items');
+            const resumen = document.getElementById('carrito-resumen');
+            const totalPrecioEl = document.getElementById('carrito-total-precio');
+
+            if (carritoItems.length === 0) {
+                contenedor.innerHTML = '<p style="color: var(--text-muted); font-size: 13px; margin: 0;">El carrito está vacío. Cotiza y agrega archivos para pagar todo junto.</p>';
+                resumen.style.display = 'none';
+                return;
+            }
+
+            let html = '';
+            let precioTotal = 0;
+
+            carritoItems.forEach((item, index) => {
+                precioTotal += item.total_estimado;
+                html += `
+                    <div class="carrito-item">
+                        <div>
+                            <strong>${item.archivo_nombre}</strong><br>
+                            <span style="color: var(--text-muted); font-size: 11px;">Material: ${item.material.toUpperCase()} | Espesor: ${item.espesor}mm</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="color: #4caf50; font-weight: bold;">$${item.total_estimado.toLocaleString('es-AR')}</span><br>
+                            <button type="button" class="btn-eliminar-item" onclick="eliminarDelCarrito(${index})">Eliminar</button>
+                        </div>
+                    </div>
+                `;
+            });
+
+            contenedor.innerHTML = html;
+            totalPrecioEl.innerText = `$${precioTotal.toLocaleString('es-AR')} ARS`;
+            resumen.style.display = 'block';
+        }
+
+        function eliminarDelCarrito(index) {
+            carritoItems.splice(index, 1);
+            actualizarVistaCarrito();
+        }
+
+        // Pagar carrito completo con el endpoint correspondiente
+        document.getElementById('btnPagarCarrito').addEventListener('click', async () => {
+            if (carritoItems.length === 0) return;
+
+            const btn = document.getElementById('btnPagarCarrito');
+            btn.disabled = true;
+            btn.innerText = 'Generando link de pago conjunto...';
+
+            const idsString = carritoItems.map(item => item.quote_id).join(',');
             const formData = new FormData();
-            formData.append('quote_id', currentQuoteId);
+            formData.append('item_ids', idsString);
 
             try {
-                const res = await fetch('/crear_pago', { method: 'POST', body: formData });
+                const res = await fetch('/crear_pago_carrito', { method: 'POST', body: formData });
                 const data = await res.json();
 
-                if (!res.ok) throw new Error(data.detail || 'Error al generar el pago');
+                if (!res.ok) throw new Error(data.detail || 'Error al generar el pago del carrito');
 
                 window.location.href = data.init_point;
             } catch (err) {
                 alert('Error: ' + err.message);
                 btn.disabled = false;
-                btn.innerText = 'Pagar con Mercado Pago';
+                btn.innerText = 'Pagar Todo con Mercado Pago';
             }
         });
     </script>
