@@ -297,51 +297,69 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     msp = doc.modelspace()
 
     total_length_mm = 0.0
-    ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
-
-    entidades_totales = []
     all_points_x = []
     all_points_y = []
+    
+    paths_list = []
 
-    def procesar_para_cotizar(entidades):
-        nonlocal total_length_mm, entidades_totales
+    def extraer_paths_recursivo(entidades):
         for entity in entidades:
             dxftype = entity.dxftype()
             if dxftype == 'INSERT':
                 try:
                     if hasattr(entity, 'virtual_entities'):
-                        procesar_para_cotizar(entity.virtual_entities())
+                        extraer_paths_recursivo(entity.virtual_entities())
                 except Exception:
                     pass
                 continue
 
-            if dxftype not in ENTIDADES_CORTE:
-                continue
-
-            entidades_totales.append(entity)
-
             try:
                 p = path.make_path(entity)
-                total_length_mm += path.length(p)
-                for pt in p.control_points():
-                    all_points_x.append(float(pt[0]))
-                    all_points_y.append(float(pt[1]))
+                if p:
+                    if p.has_sub_paths:
+                        for sub in p.sub_paths():
+                            paths_list.append(sub)
+                    else:
+                        paths_list.append(p)
             except Exception:
-                if dxftype == 'LINE':
-                    s, e = entity.dxf.start, entity.dxf.end
-                    total_length_mm += s.distance(e)
-                    all_points_x.extend([s.x, e.x])
-                    all_points_y.extend([s.y, e.y])
-                elif dxftype == 'CIRCLE':
-                    c, r = entity.dxf.center, entity.dxf.radius
-                    total_length_mm += 2 * math.pi * r
-                    all_points_x.extend([c.x - r, c.x + r])
-                    all_points_y.extend([c.y - r, c.y + r])
+                pass
 
-    procesar_para_cotizar(msp)
+    extraer_paths_recursivo(msp)
     for block in doc.blocks:
         if not block.name.startswith('*'):
-            procesar_para_cotizar(block)
+            extraer_paths_recursivo(block)
+
+    piezas_detectadas = 0
+    perforaciones_detectadas = 0
+
+    for p in paths_list:
+        try:
+            length = path.length(p)
+            if length > 0:
+                total_length_mm += length
+            
+            for pt in p.control_points():
+                all_points_x.append(float(pt[0]))
+                all_points_y.append(float(pt[1]))
+
+            is_closed = False
+            try:
+                is_closed = p.is_closed()
+            except Exception:
+                pts = list(p.control_points())
+                if len(pts) > 2:
+                    ini, fin = pts[0], pts[-1]
+                    if math.isclose(float(ini[0]), float(fin[0]), abs_tol=1e-2) and math.isclose(float(ini[1]), float(fin[1]), abs_tol=1e-2):
+                        is_closed = True
+
+            if is_closed:
+                piezas_detectadas += 1
+                perforaciones_detectadas += 1
+        except Exception:
+            pass
+
+    piezas_detectadas = max(1, piezas_detectadas)
+    perforaciones_detectadas = max(1, perforaciones_detectadas)
 
     # 1. CÁLCULO DE DIMENSIONES REALES (Ancho x Alto en mm)
     if all_points_x and all_points_y:
@@ -350,68 +368,13 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     else:
         ancho_pieza, alto_pieza = 0.0, 0.0
 
-    # 2. CONTEO EXHAUSTIVO Y RECURSIVO DE PIERCINGS Y PIEZAS
-    circulos_count = 0
-    arcos_count = 0
-    poligonos_cerrados = 0
-
-    def contar_entidades_recursivo(entidades):
-        nonlocal circulos_count, arcos_count, poligonos_cerrados
-        for entity in entidades:
-            dxftype = entity.dxftype()
-            
-            if dxftype == 'INSERT':
-                try:
-                    if hasattr(entity, 'virtual_entities'):
-                        contar_entidades_recursivo(entity.virtual_entities())
-                except Exception:
-                    pass
-                continue
-
-            if dxftype == 'CIRCLE':
-                circulos_count += 1
-            elif dxftype == 'ARC':
-                arcos_count += 1
-            elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
-                if getattr(entity, 'closed', False) or (hasattr(entity, 'is_closed') and entity.is_closed):
-                    poligonos_cerrados += 1
-                else:
-                    # Si una polilínea no está marcada explícitamente como cerrada pero sus puntos inicial y final coinciden, la contamos como cerrada
-                    try:
-                        puntos = list(entity.get_points(format='xy'))
-                        if len(puntos) > 2:
-                            p_ini, p_fin = puntos[0], puntos[-1]
-                            if math.isclose(p_ini[0], p_fin[0], abs_tol=1e-3) and math.isclose(p_ini[1], p_fin[1], abs_tol=1e-3):
-                                poligonos_cerrados += 1
-                    except Exception:
-                        pass
-            elif dxftype == 'ELLIPSE':
-                if getattr(entity.dxf, 'start_param', 0.0) == 0.0 and abs(getattr(entity.dxf, 'end_param', 2 * math.pi) - (2 * math.pi)) < 1e-6:
-                    circulos_count += 1
-            elif dxftype == 'SPLINE':
-                if getattr(entity, 'closed', False):
-                    poligonos_cerrados += 1
-
-    contar_entidades_recursivo(msp)
-    for block in doc.blocks:
-        if not block.name.startswith('*'):
-            contar_entidades_recursivo(block)
-
-    total_perforaciones = circulos_count + poligonos_cerrados + arcos_count
-    
-    if total_perforaciones == 0:
-        total_perforaciones = max(1, len([e for e in entidades_totales if e.dxftype() in ('CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE')]))
-
-    piercings = max(1, total_perforaciones)
-    piezas_detectadas = max(1, poligonos_cerrados if poligonos_cerrados > 0 else (circulos_count if circulos_count > 0 else 1))
-
     metros_corte = round(total_length_mm / 1000.0, 2)
     precio_metro, costo_mat_unitario = obtener_precio_metro_y_material(material, espesor)
 
     PRECIO_PIERCING = 50.0
     COSTO_SETUP = 1500.0
 
-    costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
+    costo_mecanizado = round((metros_corte * precio_metro) + (perforaciones_detectadas * PRECIO_PIERCING), 2)
     costo_material = round(metros_corte * costo_mat_unitario, 2) if incluye_material else 0.0
     total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
 
@@ -422,7 +385,7 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
 
     return {
         "metros_corte": metros_corte,
-        "piercings": piercings,
+        "piercings": perforaciones_detectadas,
         "ancho_mm": ancho_pieza,
         "alto_mm": alto_pieza,
         "piezas_detectadas": piezas_detectadas,
