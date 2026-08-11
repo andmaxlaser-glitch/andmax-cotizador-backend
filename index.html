@@ -123,11 +123,9 @@
 
             <div class="price">$<span id="resTotal"></span> ARS</div>
             
-            <!-- Botón para añadir la cotización actual al carrito -->
             <button type="button" id="btnAgregarCarrito" style="background:#28a745; margin-top: 5px;">➕ Agregar este archivo al Carrito</button>
         </div>
 
-        <!-- SECCIÓN DEL CARRITO DE COMPRAS -->
         <!-- SECCIÓN DEL CARRITO DE COMPRAS Y ENVÍO -->
         <div id="carrito-section">
             <h3 style="color: #fff; margin-top: 0; font-size: 1.1rem;">🛒 Tu Carrito de Cotizaciones</h3>
@@ -159,8 +157,10 @@
                 <button type="button" id="btnPagarCarrito" style="background:#009ee3; margin-top: 0;">Pagar Todo con Mercado Pago</button>
             </div>
         </div>
+    </div>
 
     <script>
+        const COSTO_ENVIO = 5000;
         let ultimaCotizacionActual = null;
         let carritoItems = [];
 
@@ -183,7 +183,6 @@
 
                 if (!res.ok) throw new Error(data.detail || 'Error en el servidor');
 
-                // Guardamos el objeto completo devuelto por el backend
                 ultimaCotizacionActual = {
                     ...data,
                     archivo_nombre: fileInput.files[0].name
@@ -205,11 +204,9 @@
             }
         });
 
-        // Botón para agregar al carrito
         document.getElementById('btnAgregarCarrito').addEventListener('click', () => {
             if (!ultimaCotizacionActual) return;
 
-            // Evitar duplicados exactos usando el quote_id
             if (carritoItems.some(item => item.quote_id === ultimaCotizacionActual.quote_id)) {
                 alert("Este archivo ya se encuentra agregado en el carrito.");
                 return;
@@ -223,19 +220,17 @@
         function actualizarVistaCarrito() {
             const contenedor = document.getElementById('carrito-items');
             const resumen = document.getElementById('carrito-resumen');
-            const totalPrecioEl = document.getElementById('carrito-total-precio');
+            const opcionesEnvio = document.getElementById('opciones-envio');
 
             if (carritoItems.length === 0) {
                 contenedor.innerHTML = '<p style="color: var(--text-muted); font-size: 13px; margin: 0;">El carrito está vacío. Cotiza y agrega archivos para pagar todo junto.</p>';
                 resumen.style.display = 'none';
+                opcionesEnvio.style.display = 'none';
                 return;
             }
 
             let html = '';
-            let precioTotal = 0;
-
             carritoItems.forEach((item, index) => {
-                precioTotal += item.total_estimado;
                 html += `
                     <div class="carrito-item">
                         <div>
@@ -251,8 +246,23 @@
             });
 
             contenedor.innerHTML = html;
-            totalPrecioEl.innerText = `$${precioTotal.toLocaleString('es-AR')} ARS`;
+            opcionesEnvio.style.display = 'block';
             resumen.style.display = 'block';
+            
+            actualizarTotalCarrito();
+        }
+
+        function actualizarTotalCarrito() {
+            let precioSubtotal = carritoItems.reduce((acc, item) => acc + item.total_estimado, 0);
+            
+            const tipoEnvioSeleccionado = document.querySelector('input[name="tipoEnvio"]:checked').value;
+            let totalFinal = precioSubtotal;
+
+            if (tipoEnvioSeleccionado === 'envio') {
+                totalFinal += COSTO_ENVIO;
+            }
+
+            document.getElementById('carrito-total-precio').innerText = `$${totalFinal.toLocaleString('es-AR')} ARS`;
         }
 
         function eliminarDelCarrito(index) {
@@ -260,7 +270,6 @@
             actualizarVistaCarrito();
         }
 
-        // Pagar carrito completo con el endpoint correspondiente
         document.getElementById('btnPagarCarrito').addEventListener('click', async () => {
             if (carritoItems.length === 0) return;
 
@@ -269,8 +278,11 @@
             btn.innerText = 'Generando link de pago conjunto...';
 
             const idsString = carritoItems.map(item => item.quote_id).join(',');
+            const tipoEnvioSeleccionado = document.querySelector('input[name="tipoEnvio"]:checked').value;
+
             const formData = new FormData();
             formData.append('item_ids', idsString);
+            formData.append('tipo_envio', tipoEnvioSeleccionado);
 
             try {
                 const res = await fetch('/crear_pago_carrito', { method: 'POST', body: formData });
