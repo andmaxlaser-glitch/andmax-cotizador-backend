@@ -102,7 +102,7 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG liviano iterando msp de forma compatible sin virtual_entities."""
+    """Genera un SVG centrado y escalado correctamente sin recortar bordes."""
     try:
         extents = bbox.extents(msp)
         if not extents.has_data:
@@ -117,13 +117,18 @@ def generar_svg_preview(doc, msp) -> str:
         if width <= 0 or height <= 0:
             return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas</p>"
 
-        margin = max(width, height) * 0.05
+        # Margen del 10% para asegurar que ningún trazo toque los bordes del contenedor
+        margin_x = width * 0.10
+        margin_y = height * 0.10
+        margin = max(margin_x, margin_y, 1.0)
+
         vb_x = min_x - margin
         vb_y = min_y - margin
         vb_w = width + (margin * 2)
         vb_h = height + (margin * 2)
 
-        stroke_width = max(max(width, height) / 180.0, 0.8)
+        # Grosor de línea adaptativo en función de la escala
+        stroke_width = max(max(width, height) / 200.0, 0.5)
         paths_svg = []
 
         ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
@@ -133,7 +138,7 @@ def generar_svg_preview(doc, msp) -> str:
             if dxftype not in ENTIDADES_CORTE:
                 continue
 
-            stroke_attr = f'stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round"'
+            stroke_attr = f'stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round" stroke-linejoin="round"'
             
             try:
                 p = path.make_path(entity)
@@ -154,11 +159,14 @@ def generar_svg_preview(doc, msp) -> str:
         if not paths_svg:
             return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles</p>"
 
+        # Inversión de eje Y alineada correctamente al punto medio Y para evitar desplazamientos fuera del encuadre
+        center_y = min_y + max_y
+
         return f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
             xmlns="http://www.w3.org/2000/svg" 
-            style="width: 100%; height: 250px; background-color: #000; border-radius: 6px; display: block;"
+            style="width: 100%; height: 280px; background-color: #111; border-radius: 6px; display: block;"
             preserveAspectRatio="xMidYMid meet">
-            <g transform="translate(0, {min_y + max_y:.2f}) scale(1, -1)">
+            <g transform="translate(0, {center_y:.2f}) scale(1, -1)">
                 {''.join(paths_svg)}
             </g>
         </svg>'''
