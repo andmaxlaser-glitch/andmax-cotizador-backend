@@ -1,11 +1,13 @@
 import os
 import shutil
 import smtplib
+import math
 from email.message import EmailMessage
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import mercurypago
+import mercadopago
 import ezdxf
+from ezdxf import path
 
 app = FastAPI()
 
@@ -18,16 +20,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuración de Mercado Pago
+# Configuración de Mercado Pago (Librería oficial mercadopago)
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
-sdk = mercurypago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
+sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 
 # Configuración de credenciales de Email
 SMTP_EMAIL = os.getenv("SMTP_EMAIL")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 EMAIL_DESTINO = os.getenv("EMAIL_DESTINO", SMTP_EMAIL)
 
-# Carpeta temporal para almacenar archivos DXF antes de la confirmación del pago
+# Carpeta temporal para almacenar archivos DXF
 TEMP_DIR = "/tmp/dxf_storage"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
@@ -78,7 +80,7 @@ El archivo .DXF original se encuentra adjunto en este correo listo para enviar a
 
 def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
     """
-    Mapea el material y espesor recibidos desde el frontend a la tarifa correspondiente por metro lineal.
+    Busca de forma segura el precio por metro según material y espesor.
     """
     TARIFAS = {
         "mdf": {
@@ -134,38 +136,41 @@ def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
         }
     }
 
-    # Normalizar texto del material
-    mat_raw = str(material_input).lower().strip()
-    if "inox" in mat_raw:
+    # Normalización flexible de la clave del material
+    mat_str = str(material_input).lower().strip()
+    if "inox" in mat_str:
         mat_key = "acero_inoxidable"
-    elif "carbono" in mat_raw or "hierro" in mat_raw:
+    elif "carbono" in mat_str or "hierro" in mat_str or "chapa" in mat_str:
         mat_key = "acero_carbono"
-    elif "acrilico" in mat_raw or "acrílico" in mat_raw:
+    elif "acril" in mat_str:
         mat_key = "acrilico"
-    elif "aluminio" in mat_raw:
+    elif "alum" in mat_str:
         mat_key = "aluminio"
     else:
         mat_key = "mdf"
 
-    # Convertir espesor
+    # Extraer únicamente los dígitos y puntos/comas del valor de espesor
+    raw_esp = str(espesor_input).replace(",", ".").strip()
+    esp_clean = "".join([c for c in raw_esp if c.isdigit() or c == '.'])
+    
     try:
-        espesor_val = float(str(espesor_input).replace(",", ".").strip())
-    except (ValueError, TypeError):
+        espesor_val = float(esp_clean)
+    except ValueError:
         espesor_val = 3.0
 
     tarifas_mat = TARIFAS[mat_key]
 
-    # Búsqueda exacta
+    # Búsqueda de coincidencia exacta
     if espesor_val in tarifas_mat:
         return tarifas_mat[espesor_val]
 
-    # Si no es exacto, busca el espesor igual o inmediatamente superior
-    espesores_ordenados = sorted(tarifas_mat.keys())
-    for esp in espesores_ordenados:
+    # Búsqueda del espesor igual o inmediatamente superior en la lista
+    espesores_disponibles = sorted(tarifas_mat.keys())
+    for esp in espesores_disponibles:
         if esp >= espesor_val:
             return tarifas_mat[esp]
 
-    return tarifas_mat[espesores_ordenados[-1]]
+    return tarifas_mat[espesores_disponibles[-1]]
 
 
 @app.get("/")
@@ -176,7 +181,7 @@ def read_root():
 @app.post("/cotizar")
 async def cotizar(
     file: UploadFile = File(...),
-    material: str = Form(...),
+    material: str = Form("mdf"),
     espesor: str = Form("3"),
     incluye_material: bool = Form(True)
 ):
@@ -191,43 +196,31 @@ async def cotizar(
         total_length_mm = 0.0
         piercings = 0
 
+        # Procesamiento preciso de entidades DXF (Soporta Splines, Polilíneas, Círculos, Arcos, etc.)
         for entity in msp:
             piercings += 1
-            dxftype = entity.dxftype()
-            if dxftype == 'LINE':
-                start = entity.dxf.start
-                end = entity.dxf.end
-                total_length_mm += start.distance(end)
-            elif dxftype == 'LWPOLYLINE':
-                points = list(entity.get_points())
-                for i in range(len(points) - 1):
-                    p1 = ezdxf.math.Vec3(points[i][0], points[i][1], 0)
-                    p2 = ezdxf.math.Vec3(points[i+1][0], points[i+1][1], 0)
-                    total_length_mm += p1.distance(p2)
-                if entity.closed:
-                    p1 = ezdxf.math.Vec3(points[-1][0], points[-1][1], 0)
-                    p2 = ezdxf.math.Vec3(points[0][0], points[0][1], 0)
-                    total_length_mm += p1.distance(p2)
-            elif dxftype == 'CIRCLE':
-                radius = entity.dxf.radius
-                total_length_mm += 2 * 3.14159 * radius
-            elif dxftype == 'ARC':
-                radius = entity.dxf.radius
-                start_angle = entity.dxf.start_angle
-                end_angle = entity.dxf.end_angle
-                angle = (end_angle - start_angle) % 360
-                total_length_mm += (angle / 360.0) * (2 * 3.14159 * radius)
+            try:
+                # Intenta convertir la entidad a trayectorias (paths) para medir longitud exacta
+                p = path.make_path(entity)
+                total_length_mm += path.length(p)
+            except Exception:
+                # Mecanismo de reserva en caso de entidades no estándar
+                dxftype = entity.dxftype()
+                if dxftype == 'LINE':
+                    total_length_mm += entity.dxf.start.distance(entity.dxf.end)
+                elif dxftype == 'CIRCLE':
+                    total_length_mm += 2 * math.pi * entity.dxf.radius
 
         metros_corte = round(total_length_mm / 1000.0, 2)
 
-        # Cálculo de tarifa por metro
+        # Búsqueda de precio según material y espesor
         precio_metro = obtener_precio_metro(material, espesor)
 
         # Costos fijos
         PRECIO_PIERCING = 50.0
         COSTO_SETUP = 1500.0
 
-        # Cálculos de costo final
+        # Cálculos de costo total
         costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
         costo_material = round(metros_corte * 800.0, 2) if incluye_material else 0.0
         total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
@@ -247,7 +240,7 @@ async def cotizar(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error leyendo el archivo DXF: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Error procesando el archivo DXF: {str(e)}")
 
 
 @app.post("/crear_pago")
