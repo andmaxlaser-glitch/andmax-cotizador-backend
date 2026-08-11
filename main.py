@@ -102,29 +102,23 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG explotando bloques y capturando todas las geometrías de corte."""
+    """Genera un SVG extrayendo todos los puntos absolutos de todas las entidades para abarcar la pieza completa."""
     try:
         paths_data = []
         all_points_x = []
         all_points_y = []
 
-        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
-
-        # Función auxiliar para procesar entidades (incluyendo bloques insertados)
-        def procesar_entidades(entidades):
+        def extraer_puntos_y_trazos(entidades):
             for entity in entidades:
                 dxftype = entity.dxftype()
                 
-                # Si es un bloque, explotamos sus entidades internas
+                # Si es un bloque insertado, intentamos procesar sus sub-entidades
                 if dxftype == 'INSERT':
                     try:
-                        sub_ents = entity.virtual_entities()
-                        procesar_entidades(sub_ents)
+                        if hasattr(entity, 'virtual_entities'):
+                            extraer_puntos_y_trazos(entity.virtual_entities())
                     except Exception:
                         pass
-                    continue
-
-                if dxftype not in ENTIDADES_CORTE:
                     continue
 
                 try:
@@ -132,11 +126,11 @@ def generar_svg_preview(doc, msp) -> str:
                     d_str = path.to_svg_path_data([p])
                     if d_str and d_str.strip():
                         paths_data.append(d_str)
-                        for pt in p:
-                            all_points_x.append(pt.x)
-                            all_points_y.append(pt.y)
+                        for pt in p.control_points():
+                            all_points_x.append(pt[0])
+                            all_points_y.append(pt[1])
                 except Exception:
-                    # Respaldo geométrico manual para líneas y círculos si path falla
+                    # Respaldo manual por tipo de entidad si path falla
                     try:
                         if dxftype == 'LINE':
                             s, e = entity.dxf.start, entity.dxf.end
@@ -148,17 +142,27 @@ def generar_svg_preview(doc, msp) -> str:
                             all_points_x.extend([c.x - r, c.x + r])
                             all_points_y.extend([c.y - r, c.y + r])
                             paths_data.append(f"M {c.x - r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x + r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x - r:.2f} {c.y:.2f}")
+                        elif dxftype == 'ARC':
+                            c, r = entity.dxf.center, entity.dxf.radius
+                            all_points_x.extend([c.x - r, c.x + r])
+                            all_points_y.extend([c.y - r, c.y + r])
                     except Exception:
                         continue
 
-        # Ejecutamos el procesamiento sobre el Modelspace principal
-        procesar_entidades(msp)
+        # Recorremos el modelspace principal
+        extraer_puntos_y_trazos(msp)
 
-        if not paths_data or not all_points_x or not all_points_y:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles para vista previa</p>"
-
-        min_x, max_x = min(all_points_x), max(all_points_x)
-        min_y, max_y = min(all_points_y), max(all_points_y)
+        # Si aún faltan puntos, usamos el bbox nativo del documento como respaldo total
+        if not all_points_x or not all_points_y:
+            ext = bbox.extents(msp)
+            if ext.has_data:
+                min_x, min_y = ext.extmin.x, ext.extmin.y
+                max_x, max_y = ext.extmax.x, ext.extmax.y
+            else:
+                return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles para vista previa</p>"
+        else:
+            min_x, max_x = min(all_points_x), max(all_points_x)
+            min_y, max_y = min(all_points_y), max(all_points_y)
 
         width = max_x - min_x
         height = max_y - min_y
@@ -166,13 +170,13 @@ def generar_svg_preview(doc, msp) -> str:
         if width <= 0 or height <= 0:
             return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas para renderizado</p>"
 
-        margin = max(width, height) * 0.08
+        margin = max(width, height) * 0.10
         vb_x = min_x - margin
         vb_y = min_y - margin
         vb_w = width + (margin * 2)
         vb_h = height + (margin * 2)
 
-        stroke_width = max(max(width, height) / 220.0, 0.4)
+        stroke_width = max(max(width, height) / 200.0, 0.5)
 
         paths_svg = [
             f'<path d="{d}" stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round" stroke-linejoin="round" />'
