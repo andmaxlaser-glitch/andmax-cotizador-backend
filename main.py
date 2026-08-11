@@ -5,6 +5,7 @@ import uuid
 import shutil
 import smtplib
 import math
+import io
 from threading import Lock
 from email.message import EmailMessage
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
@@ -14,19 +15,21 @@ from fastapi.staticfiles import StaticFiles
 import mercadopago
 import ezdxf
 from ezdxf import path, bbox
+from ezdxf.addons.drawing import RenderContext, Frontend
+from ezdxf.addons.drawing.svg import SVGBackend
 
 app = FastAPI()
 
 # --------------------------------------------------------------------------
-# Rutas del Proyecto y Archivos Estáticos (Soporte exhaustivo para /frontend)
+# Rutas del Proyecto y Archivos Estáticos
 # --------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Directorio actual de main.py
-PROJECT_ROOT = os.path.dirname(BASE_DIR)              # Un nivel arriba
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
 
 RUTAS_FRONTEND_POSIBLES = [
-    os.path.join(PROJECT_ROOT, "frontend"),          # /src/frontend
-    os.path.join(BASE_DIR, "frontend"),              # /src/backend/frontend
-    os.path.join(PROJECT_ROOT, "Frontend"),          # Tolerancia a Mayúscula
+    os.path.join(PROJECT_ROOT, "frontend"),
+    os.path.join(BASE_DIR, "frontend"),
+    os.path.join(PROJECT_ROOT, "Frontend"),
     os.path.join(BASE_DIR, "Frontend"),
 ]
 
@@ -101,84 +104,25 @@ def nombre_archivo_seguro(filename: str) -> str:
     return f"{uuid.uuid4().hex}_{base}"
 
 
-def generar_svg_preview(msp) -> str:
-    """Genera un SVG vectorial visible con fuerza de trazo y soporte directo."""
+def generar_svg_preview(doc, msp) -> str:
+    """Genera un SVG vectorial visible probando extracción directa y addon drawing como fallback."""
     try:
-        extents = bbox.extents(msp)
-        if not extents.has_data:
-            return "<div style='color:#fff; padding:10px;'>DXF sin vectores visibles</div>"
+        # Intento 1: Renderizado mediante Addon Drawing (compatible con cualquier entidad DXF)
+        try:
+            out = io.StringIO()
+            backend = SVGBackend()
+            ctx = RenderContext(doc)
+            ctx.set_current_layout(msp)
+            Frontend(ctx, backend).draw_layout(msp)
+            svg_string = backend.get_string()
+            if svg_string and "<svg" in svg_string:
+                # Ajuste de estilo para que encaje en el contenedor del frontend
+                svg_string = svg_string.replace("<svg", '<svg style="width: 100%; max-height: 250px; background-color: #000; border-radius: 6px;"')
+                return svg_string
+        except Exception:
+            pass
 
-        min_x, min_y = extents.extmin.x, extents.extmin.y
-        max_x, max_y = extents.extmax.x, extents.extmax.y
-
-        width = max_x - min_x
-        height = max_y - min_y
-
-        if width <= 0 or height <= 0:
-            return "<div style='color:#fff; padding:10px;'>Dimensiones inválidas</div>"
-
-        # Margen de seguridad
-        margin = max(width, height) * 0.05
-        vb_x = min_x - margin
-        vb_y = min_y - margin
-        vb_w = width + (margin * 2)
-        vb_h = height + (margin * 2)
-
-        # Grosor de trazo garantizado para visibilidad
-        stroke_width = max(max(width, height) / 150.0, 1.0)
-        paths_svg = []
-
-        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
-
-        entities_to_process = list(msp.virtual_entities())
-        if not entities_to_process:
-            entities_to_process = list(msp)
-
-        for entity in entities_to_process:
-            dxftype = entity.dxftype()
-            if dxftype not in ENTIDADES_CORTE:
-                continue
-
-            # Trazo rojo brillante de alto contraste
-            stroke_attr = f'stroke="#ff4d4d" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round"'
-
-            try:
-                p = path.make_path(entity)
-                d_str = path.to_svg_path_data([p])
-                if d_str and d_str.strip():
-                    paths_svg.append(f'<path d="{d_str}" {stroke_attr} />')
-            except Exception:
-                try:
-                    if dxftype == 'LINE':
-                        s, e = entity.dxf.start, entity.dxf.end
-                        paths_svg.append(
-                            f'<line x1="{s.x:.2f}" y1="{s.y:.2f}" x2="{e.x:.2f}" y2="{e.y:.2f}" {stroke_attr} />'
-                        )
-                    elif dxftype == 'CIRCLE':
-                        c, r = entity.dxf.center, entity.dxf.radius
-                        paths_svg.append(
-                            f'<circle cx="{c.x:.2f}" cy="{c.y:.2f}" r="{r:.2f}" {stroke_attr} />'
-                        )
-                except Exception:
-                    continue
-
-        if not paths_svg:
-            return "<div style='color:#fff; padding:10px;'>No se encontraron entidades de corte</div>"
-
-        # SVG estilizado
-        svg_code = f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
-            xmlns="http://www.w3.org/2000/svg" 
-            style="width: 100%; height: 250px; background-color: #121212; border-radius: 8px; border: 1px solid #333; display: block;">
-            <g transform="translate(0, {min_y + max_y:.2f}) scale(1, -1)">
-                {''.join(paths_svg)}
-            </g>
-        </svg>'''
-
-        return svg_code
-
-    except Exception as e:
-        print(f"Error generando SVG: {e}")
-        return "<div style='color:#fff; padding:10px;'>Error al generar previsualización</div>"        # 1. Bounding box general
+        # Intento 2: Extracción manual por delimitación de coordenadas (Fallback)
         extents = bbox.extents(msp)
         if not extents.has_data:
             return "<p style='color:#a0a0a0; font-size:12px;'>DXF sin vectores visibles</p>"
@@ -198,57 +142,41 @@ def generar_svg_preview(msp) -> str:
         vb_w = width + (margin * 2)
         vb_h = height + (margin * 2)
 
-        stroke_width = max(width, height) / 300.0
+        stroke_width = max(max(width, height) / 200.0, 0.5)
         paths_svg = []
 
-        # Recorrer entidades desarmando bloques
-        entities_to_process = list(msp.virtual_entities())
-        if not entities_to_process:
-            entities_to_process = list(msp)
+        entities_to_process = list(msp.virtual_entities()) or list(msp)
 
         for entity in entities_to_process:
-            dxftype = entity.dxftype()
+            stroke_attr = f'stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round"'
             try:
-                # Intento 1: Conversión directa a SVG Path data
                 p = path.make_path(entity)
                 d_str = path.to_svg_path_data([p])
                 if d_str and d_str.strip():
-                    paths_svg.append(
-                        f'<path d="{d_str}" fill="none" stroke="#e63946" '
-                        f'stroke-width="{stroke_width:.2f}" stroke-linecap="round" stroke-linejoin="round" />'
-                    )
+                    paths_svg.append(f'<path d="{d_str}" {stroke_attr} />')
             except Exception:
-                # Intento 2: Fallback manual para tipos de entidades básicos
                 try:
+                    dxftype = entity.dxftype()
                     if dxftype == 'LINE':
                         s, e = entity.dxf.start, entity.dxf.end
-                        paths_svg.append(
-                            f'<line x1="{s.x:.2f}" y1="{s.y:.2f}" x2="{e.x:.2f}" y2="{e.y:.2f}" '
-                            f'stroke="#e63946" stroke-width="{stroke_width:.2f}" stroke-linecap="round" />'
-                        )
+                        paths_svg.append(f'<line x1="{s.x:.2f}" y1="{s.y:.2f}" x2="{e.x:.2f}" y2="{e.y:.2f}" {stroke_attr} />')
                     elif dxftype == 'CIRCLE':
                         c, r = entity.dxf.center, entity.dxf.radius
-                        paths_svg.append(
-                            f'<circle cx="{c.x:.2f}" cy="{c.y:.2f}" r="{r:.2f}" '
-                            f'fill="none" stroke="#e63946" stroke-width="{stroke_width:.2f}" />'
-                        )
+                        paths_svg.append(f'<circle cx="{c.x:.2f}" cy="{c.y:.2f}" r="{r:.2f}" {stroke_attr} />')
                 except Exception:
                     continue
 
         if not paths_svg:
             return "<p style='color:#a0a0a0; font-size:12px;'>No se detectaron entidades de corte compatibles</p>"
 
-        # Retornar SVG armado
-        svg_code = f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
+        return f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
             xmlns="http://www.w3.org/2000/svg" 
-            style="width: 100%; height: 100%; max-height: 250px; background-color: #1a1a1a; border-radius: 8px; display: block;"
+            style="width: 100%; height: 250px; background-color: #000; border-radius: 6px; display: block;"
             preserveAspectRatio="xMidYMid meet">
             <g transform="translate(0, {min_y + max_y:.2f}) scale(1, -1)">
                 {''.join(paths_svg)}
             </g>
         </svg>'''
-
-        return svg_code
 
     except Exception as e:
         print(f"Error generando SVG: {e}")
@@ -349,10 +277,7 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     piercings = 0
     ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
 
-    # Iterar entidades para calcular longitud
-    entities_to_calc = list(msp.virtual_entities())
-    if not entities_to_calc:
-        entities_to_calc = list(msp)
+    entities_to_calc = list(msp.virtual_entities()) or list(msp)
 
     for entity in entities_to_calc:
         dxftype = entity.dxftype()
@@ -381,7 +306,7 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     if math.isnan(total_estimado) or math.isinf(total_estimado) or total_estimado <= 0:
         raise ValueError("El cálculo de la cotización generó un valor inválido.")
 
-    svg_preview = generar_svg_preview(msp)
+    svg_preview = generar_svg_preview(doc, msp)
 
     return {
         "metros_corte": metros_corte,
@@ -397,7 +322,6 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
 
 @app.get("/")
 async def read_root():
-    """Servir index.html buscando exhaustivamente en las ubicaciones posibles."""
     posibles_html = [
         os.path.join(PROJECT_ROOT, "frontend", "index.html"),
         os.path.join(BASE_DIR, "frontend", "index.html"),
