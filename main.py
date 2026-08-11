@@ -373,6 +373,22 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
             elif dxftype == 'ARC':
                 arcos_count += 1
             elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
+                if getattr(entity, 'closed', False) or (hasattr(entity, 'is_closed') and entity.is_closed):
+                    poligonos_cerrados += 1
+                else:
+                    # Si una polilínea no está marcada explícitamente como cerrada pero sus puntos inicial y final coinciden, la contamos como cerrada
+                    try:
+                        puntos = list(entity.get_points(format='xy'))
+                        if len(puntos) > 2:
+                            p_ini, p_fin = puntos[0], puntos[-1]
+                            if math.isclose(p_ini[0], p_fin[0], abs_tol=1e-3) and math.isclose(p_ini[1], p_fin[1], abs_tol=1e-3):
+                                poligonos_cerrados += 1
+                    except Exception:
+                        pass
+            elif dxftype == 'ELLIPSE':
+                if getattr(entity.dxf, 'start_param', 0.0) == 0.0 and abs(getattr(entity.dxf, 'end_param', 2 * math.pi) - (2 * math.pi)) < 1e-6:
+                    circulos_count += 1
+            elif dxftype == 'SPLINE':
                 if getattr(entity, 'closed', False):
                     poligonos_cerrados += 1
 
@@ -384,7 +400,7 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     total_perforaciones = circulos_count + poligonos_cerrados + arcos_count
     
     if total_perforaciones == 0:
-        total_perforaciones = max(1, len([e for e in entidades_totales if e.dxftype() in ('CIRCLE', 'ARC', 'LWPOLYLINE')]))
+        total_perforaciones = max(1, len([e for e in entidades_totales if e.dxftype() in ('CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE')]))
 
     piercings = max(1, total_perforaciones)
     piezas_detectadas = max(1, poligonos_cerrados if poligonos_cerrados > 0 else (circulos_count if circulos_count > 0 else 1))
