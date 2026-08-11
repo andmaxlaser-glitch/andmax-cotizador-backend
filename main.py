@@ -18,23 +18,33 @@ from ezdxf import path, bbox
 app = FastAPI()
 
 # --------------------------------------------------------------------------
-# Rutas del Proyecto y Archivos Estáticos (Soporte para carpeta /frontend)
+# Rutas del Proyecto y Archivos Estáticos (Soporte exhaustivo para /frontend)
 # --------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Directorio actual de main.py
+PROJECT_ROOT = os.path.dirname(BASE_DIR)              # Un nivel arriba
 
-# Intentar encontrar la carpeta frontend tanto si está al mismo nivel que main.py
-# como si main.py está dentro de /backend (subiendo un nivel).
-PROJECT_ROOT = os.path.dirname(BASE_DIR)
+# Probar distintas combinaciones de ubicación para la carpeta frontend
+RUTAS_FRONTEND_POSIBLES = [
+    os.path.join(PROJECT_ROOT, "frontend"),          # /src/frontend
+    os.path.join(BASE_DIR, "frontend"),              # /src/backend/frontend
+    os.path.join(PROJECT_ROOT, "Frontend"),          # Tolerancia a Mayúscula
+    os.path.join(BASE_DIR, "Frontend"),
+]
 
-FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
-if not os.path.exists(FRONTEND_DIR):
-    FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
+FRONTEND_DIR = None
+for ruta in RUTAS_FRONTEND_POSIBLES:
+    if os.path.exists(ruta):
+        FRONTEND_DIR = ruta
+        break
 
-static_dir = os.path.join(FRONTEND_DIR, "static")
-if not os.path.exists(static_dir):
+# Configuración de archivos estáticos (/static)
+static_dir = None
+if FRONTEND_DIR and os.path.exists(os.path.join(FRONTEND_DIR, "static")):
+    static_dir = os.path.join(FRONTEND_DIR, "static")
+elif os.path.exists(os.path.join(BASE_DIR, "static")):
     static_dir = os.path.join(BASE_DIR, "static")
 
-if os.path.exists(static_dir):
+if static_dir and os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # --------------------------------------------------------------------------
@@ -278,19 +288,24 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
 
 @app.get("/")
 async def read_root():
-    """Servir index.html buscando primero en la carpeta frontend y luego en la raíz."""
-    html_path_frontend = os.path.join(FRONTEND_DIR, "index.html")
-    html_path_root = os.path.join(BASE_DIR, "index.html")
+    """Servir index.html buscando exhaustivamente en las ubicaciones posibles."""
+    posibles_html = [
+        os.path.join(PROJECT_ROOT, "frontend", "index.html"),
+        os.path.join(BASE_DIR, "frontend", "index.html"),
+        os.path.join(PROJECT_ROOT, "Frontend", "index.html"),
+        os.path.join(BASE_DIR, "Frontend", "index.html"),
+        os.path.join(BASE_DIR, "index.html"),
+        os.path.join(PROJECT_ROOT, "index.html")
+    ]
 
-    if os.path.exists(html_path_frontend):
-        return FileResponse(html_path_frontend)
-    elif os.path.exists(html_path_root):
-        return FileResponse(html_path_root)
+    for html_path in posibles_html:
+        if os.path.exists(html_path):
+            return FileResponse(html_path)
 
     return {
         "status": "Cotizador API ANDMAX Laser activo",
-        "error": "No se encontró index.html ni en /frontend ni en la raíz del proyecto",
-        "rutas_buscadas": [html_path_frontend, html_path_root]
+        "error": "No se encontró index.html",
+        "rutas_buscadas": posibles_html
     }
 
 
