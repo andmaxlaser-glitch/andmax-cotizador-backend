@@ -3,10 +3,9 @@ import re
 import time
 import uuid
 import shutil
-import smtplib
 import math
 from threading import Lock
-from email.message import EmailMessage
+import requests
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -61,9 +60,8 @@ app.add_middleware(
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 
-SMTP_EMAIL = os.getenv("SMTP_EMAIL")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-EMAIL_DESTINO = os.getenv("EMAIL_DESTINO", SMTP_EMAIL)
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+EMAIL_DESTINO = os.getenv("EMAIL_DESTINO", "andmax.laser@gmail.com")
 
 TEMP_DIR = "/tmp/dxf_storage"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -71,9 +69,6 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
 ALLOWED_EXTENSIONS = {".dxf"}
 
-# --------------------------------------------------------------------------
-# Almacén de cotizaciones en memoria
-# --------------------------------------------------------------------------
 QUOTES: dict[str, dict] = {}
 QUOTES_LOCK = Lock()
 QUOTE_TTL_SECONDS = 60 * 60 * 2  # 2 horas
@@ -102,7 +97,6 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG seguro extrayendo trayectorias de forma robusta."""
     try:
         paths_data = []
         all_points_x = []
@@ -204,13 +198,9 @@ def generar_svg_preview(doc, msp) -> str:
 
 
 def enviar_email_notificacion_carrito(email_cliente: str, items_info: list, monto_total: str):
-    if not SMTP_EMAIL or not SMTP_PASSWORD:
+    if not RESEND_API_KEY:
+        print("Error: RESEND_API_KEY no está configurada.")
         return
-
-    msg = EmailMessage()
-    msg['Subject'] = f'⚡ NUEVO PEDIDO PAGADO ({len(items_info)} archivos) - ANDMAX'
-    msg['From'] = SMTP_EMAIL
-    msg['To'] = EMAIL_DESTINO
 
     envio_info = items_info[0].get("datos_envio_cliente", {}) if items_info else {}
 
@@ -226,8 +216,7 @@ def enviar_email_notificacion_carrito(email_cliente: str, items_info: list, mont
 • Subtotal: ${item['total_estimado']}
 """
 
-    contenido_texto = f"""
-¡Hola! Se ha confirmado un nuevo pago en el sistema.
+    contenido_texto = f"""¡Hola! Se ha confirmado un nuevo pago en el sistema.
 
 ==============================================
 DATOS DE CONTACTO Y ENVÍO
@@ -247,21 +236,42 @@ DETALLE DE LAS PIEZAS
 ==============================================
 Monto Total Abonado: ${monto_total}
 """
-    msg.set_content(contenido_texto)
 
+    import base64
+    attachments = []
     for item in items_info:
         filepath = item.get("filepath")
         if filepath and os.path.exists(filepath):
             with open(filepath, 'rb') as f:
-                file_data = f.read()
-                msg.add_attachment(file_data, maintype='application', subtype='dxf', filename=item['original_filename'])
+                file_bytes = f.read()
+                b64_content = base64.b64encode(file_bytes).decode('utf-8')
+                attachments.append({
+                    "filename": item['original_filename'],
+                    "content": b64_content
+                })
+
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    # Resend por defecto permite enviar desde onboarding@resend.dev para pruebas inmediatas
+    data = {
+        "from": "ANDMAX Laser <onboarding@resend.dev>",
+        "to": [EMAIL_DESTINO],
+        "subject": f"⚡ NUEVO PEDIDO PAGADO ({len(items_info)} archivos) - ANDMAX",
+        "text": contenido_texto,
+        "attachments": attachments
+    }
 
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(SMTP_EMAIL, SMTP_PASSWORD)
-            smtp.send_message(msg)
+        response = requests.post("https://api.resend.com/emails", json=data, headers=headers)
+        if response.status_code not in [200, 201]:
+            print(f"Error enviando correo con Resend: {response.text}")
+        else:
+            print("Correo enviado exitosamente vía Resend.")
     except Exception as e:
-        print(f"Error enviando email de carrito: {e}")
+        print(f"Error de conexión con Resend: {e}")
 
 
 def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> tuple[float, float]:
@@ -481,8 +491,7 @@ async def read_root():
 
     return {
         "status": "Cotizador API ANDMAX Laser activo",
-        "error": "No se encontró index.html",
-        "rutas_buscadas": posibles_html
+        "error": "No se encontró index.html"
     }
 
 
@@ -553,7 +562,7 @@ async def crear_pago(quote_id: str = Form(...)):
 @app.post("/crear_pago_carrito")
 async def crear_pago_carrito(
     item_ids: str = Form(...),
-    tipo_envio: str = Form("retiro"),  # "retiro", "local" o "correo"
+    tipo_envio: str = Form("retiro"),
     nombre_envio: str = Form(""),
     telefono_envio: str = Form(""),
     direccion_envio: str = Form(""),
@@ -574,9 +583,9 @@ async def crear_pago_carrito(
         for qid in ids_list:
             quote = QUOTES.get(qid)
             if not quote:
-                raise HTTPException(status_code=404, detail="Una de las cotizaciones expiró o no existe. Volvé a cargar los archivos.")
+                raise HTTPException(status_code=404, detail="Una de las cotizaciones expiró o no existe.")
             if quote["used"]:
-                raise HTTPException(status_code=409, detail=f"El archivo {quote['original_filename']} ya fue procesado en otro pago.")
+                raise HTTPException(status_code=409, detail=f"El archivo {quote['original_filename']} ya fue procesado.")
             
             items_mp.append({
                 "title": f"Corte: {quote['original_filename']} ({quote['material']} {quote['espesor']}mm)",
@@ -586,7 +595,6 @@ async def crear_pago_carrito(
             })
             filepaths_asociados.append(qid)
 
-    # Calcular costo de envío dinámico según la opción seleccionada
     costo_envio = 0.0
     titulo_envio = ""
     texto_envio_resumen = "Retira por el local"
@@ -622,7 +630,7 @@ async def crear_pago_carrito(
         raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
 
     if preference_response.get("status") not in [200, 201]:
-        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago conjunta")
+        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago")
 
     preference = preference_response["response"]
     
