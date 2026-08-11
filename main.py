@@ -17,6 +17,9 @@ from ezdxf import path
 
 app = FastAPI()
 
+# --------------------------------------------------------------------------
+# Rutas del Proyecto y Archivos Estáticos
+# --------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 
@@ -42,6 +45,9 @@ elif os.path.exists(os.path.join(BASE_DIR, "static")):
 if static_dir and os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# --------------------------------------------------------------------------
+# CORS
+# --------------------------------------------------------------------------
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 app.add_middleware(
@@ -63,6 +69,11 @@ TEMP_DIR = "/tmp/dxf_storage"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
+ALLOWED_EXTENSIONS = {".dxf"}
+
+# --------------------------------------------------------------------------
+# Almacén de cotizaciones en memoria
+# --------------------------------------------------------------------------
 QUOTES: dict[str, dict] = {}
 QUOTES_LOCK = Lock()
 QUOTE_TTL_SECONDS = 60 * 60 * 2  # 2 horas
@@ -91,6 +102,7 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
+    """Genera un SVG extrayendo directamente los puntos y vértices crudos de todas las entidades del DXF."""
     try:
         paths_data = []
         all_points_x = []
@@ -99,6 +111,7 @@ def generar_svg_preview(doc, msp) -> str:
         def extraer_de_contenedor(entidades):
             for entity in entidades:
                 dxftype = entity.dxftype()
+
                 if dxftype == 'INSERT':
                     try:
                         if hasattr(entity, 'virtual_entities'):
@@ -124,11 +137,13 @@ def generar_svg_preview(doc, msp) -> str:
                         all_points_x.extend([s.x, e.x])
                         all_points_y.extend([s.y, e.y])
                         paths_data.append(f"M {s.x:.2f} {s.y:.2f} L {e.x:.2f} {e.y:.2f}")
+
                     elif dxftype == 'CIRCLE':
                         c, r = entity.dxf.center, entity.dxf.radius
                         all_points_x.extend([c.x - r, c.x + r])
                         all_points_y.extend([c.y - r, c.y + r])
                         paths_data.append(f"M {c.x - r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x + r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x - r:.2f} {c.y:.2f}")
+
                     elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
                         puntos = list(entity.get_points(format='xy'))
                         if puntos:
@@ -151,24 +166,30 @@ def generar_svg_preview(doc, msp) -> str:
                 extraer_de_contenedor(block)
 
         if not all_points_x or not all_points_y:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles</p>"
+            return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles para vista previa</p>"
 
         min_x, max_x = min(all_points_x), max(all_points_x)
         min_y, max_y = min(all_points_y), max(all_points_y)
-        width, height = max_x - min_x, max_y - min_y
+
+        width = max_x - min_x
+        height = max_y - min_y
 
         if width <= 0 or height <= 0:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas</p>"
+            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas para renderizado</p>"
 
         margin = max(width, height) * 0.10
-        vb_x, vb_y = min_x - margin, min_y - margin
-        vb_w, vb_h = width + (margin * 2), height + (margin * 2)
+        vb_x = min_x - margin
+        vb_y = min_y - margin
+        vb_w = width + (margin * 2)
+        vb_h = height + (margin * 2)
+
         stroke_width = max(max(width, height) / 220.0, 0.4)
 
         paths_svg = [
             f'<path d="{d}" stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round" stroke-linejoin="round" />'
             for d in paths_data
         ]
+
         center_y = min_y + max_y
 
         return f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
@@ -179,8 +200,49 @@ def generar_svg_preview(doc, msp) -> str:
                 {''.join(paths_svg)}
             </g>
         </svg>'''
-    except Exception:
+
+    except Exception as e:
+        print(f"Error generando SVG: {e}")
         return "<p style='color:#a0a0a0; font-size:12px;'>Vista previa no disponible</p>"
+
+
+def enviar_email_notificacion(email_cliente: str, filepath: str, material: str, espesor: str, metros: str, piercings: str, monto: str):
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        return
+
+    msg = EmailMessage()
+    msg['Subject'] = f'⚡ NUEVO PEDIDO DE CORTE PAGADO: {material.upper()} {espesor}mm'
+    msg['From'] = SMTP_EMAIL
+    msg['To'] = EMAIL_DESTINO
+
+    contenido_texto = f"""
+¡Hola! Se ha confirmado un nuevo pago de corte láser.
+
+==============================================
+DETALLE DEL TRABAJO DE CORTE
+==============================================
+• Material: {material.upper()}
+• Espesor: {espesor} mm
+• Metros de corte calculados: {metros} m
+• Perforaciones (Piercings): {piercings}
+• Monto Total Abonado: ${monto}
+• Cliente Contacto/Email: {email_cliente}
+==============================================
+"""
+    msg.set_content(contenido_texto)
+
+    if os.path.exists(filepath):
+        filename = os.path.basename(filepath)
+        with open(filepath, 'rb') as f:
+            file_data = f.read()
+            msg.add_attachment(file_data, maintype='application', subtype='dxf', filename=filename)
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(SMTP_EMAIL, SMTP_PASSWORD)
+            smtp.send_message(msg)
+    except Exception as e:
+        print(f"Error enviando email: {e}")
 
 
 def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> tuple[float, float]:
@@ -191,8 +253,13 @@ def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> 
         "acero_inoxidable": {1.0: 9500.0, 2.0: 11500.0, 3.0: 14945.0, 4.0: 16500.0, 5.0: 18500.0, 6.0: 17934.0, 8.0: 21000.0, 10.0: 24000.0, 12.0: 27000.0},
         "aluminio": {1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0}
     }
+
     COSTOS_MATERIAL_BASE = {
-        "mdf": 800.0, "acrilico": 1200.0, "acero_carbono": 3500.0, "acero_inoxidable": 6500.0, "aluminio": 4500.0
+        "mdf": 800.0,
+        "acrilico": 1200.0,
+        "acero_carbono": 3500.0,
+        "acero_inoxidable": 6500.0,
+        "aluminio": 4500.0
     }
 
     mat_str = str(material_input).lower().strip()
@@ -204,20 +271,24 @@ def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> 
 
     raw_esp = str(espesor_input).replace(",", ".").strip()
     esp_clean = "".join([c for c in raw_esp if c.isdigit() or c == '.'])
-    espesor_val = float(esp_clean) if esp_clean else 3.0
+    try: 
+        espesor_val = float(esp_clean)
+    except ValueError: 
+        espesor_val = 3.0
 
     tarifas_mat = TARIFAS_CORTE[mat_key]
-    if espesor_val in tarifas_mat:
+    if espesor_val in tarifas_mat: 
         precio_corte = tarifas_mat[espesor_val]
     else:
         espesores = sorted(tarifas_mat.keys())
         precio_corte = tarifas_mat[espesores[-1]]
         for esp in espesores:
-            if esp >= espesor_val:
+            if esp >= espesor_val: 
                 precio_corte = tarifas_mat[esp]
                 break
 
     precio_material = COSTOS_MATERIAL_BASE[mat_key] * (espesor_val / 3.0)
+    
     return float(precio_corte), float(round(precio_material, 2))
 
 
@@ -227,6 +298,7 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
 
     total_length_mm = 0.0
     ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
+
     entidades_totales = []
     all_points_x = []
     all_points_y = []
@@ -247,6 +319,7 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
                 continue
 
             entidades_totales.append(entity)
+
             try:
                 p = path.make_path(entity)
                 total_length_mm += path.length(p)
@@ -270,19 +343,29 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
         if not block.name.startswith('*'):
             procesar_para_cotizar(block)
 
-    # Dimensiones (Ancho x Alto)
+    # 1. CÁLCULO DE DIMENSIONES REALES (Ancho x Alto en mm)
     if all_points_x and all_points_y:
         ancho_pieza = round(max(all_points_x) - min(all_points_x), 2)
         alto_pieza = round(max(all_points_y) - min(all_points_y), 2)
     else:
         ancho_pieza, alto_pieza = 0.0, 0.0
 
-    poligonos_cerrados = sum(1 for e in entidades_totales if e.dxftype() in ('LWPOLYLINE', 'POLYLINE') and getattr(e, 'closed', False))
+    # 2. CONTEO ROBUSTO DE PIERCINGS Y PIEZAS
     circulos_count = sum(1 for e in entidades_totales if e.dxftype() == 'CIRCLE')
-    piezas_detectadas = max(1, poligonos_cerrados if poligonos_cerrados > 0 else (circulos_count if circulos_count > 0 else 1))
-
     arcos_count = sum(1 for e in entidades_totales if e.dxftype() == 'ARC')
-    piercings = max(1, circulos_count + poligonos_cerrados + arcos_count)
+    poligonos_cerrados = sum(
+        1 for e in entidades_totales 
+        if e.dxftype() in ('LWPOLYLINE', 'POLYLINE') and getattr(e, 'closed', False)
+    )
+
+    # Suma limpia de elementos independientes de entrada al material (piercings reales)
+    total_perforaciones = circulos_count + poligonos_cerrados + arcos_count
+    
+    if total_perforaciones == 0:
+        total_perforaciones = max(1, len([e for e in entidades_totales if e.dxftype() in ('CIRCLE', 'ARC', 'LWPOLYLINE')]))
+
+    piercings = max(1, total_perforaciones)
+    piezas_detectadas = max(1, poligonos_cerrados if poligonos_cerrados > 0 else (circulos_count if circulos_count > 0 else 1))
 
     metros_corte = round(total_length_mm / 1000.0, 2)
     precio_metro, costo_mat_unitario = obtener_precio_metro_y_material(material, espesor)
@@ -293,6 +376,9 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
     costo_material = round(metros_corte * costo_mat_unitario, 2) if incluye_material else 0.0
     total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
+
+    if math.isnan(total_estimado) or math.isinf(total_estimado) or total_estimado <= 0:
+        raise ValueError("El cálculo de la cotización generó un valor inválido.")
 
     svg_preview = generar_svg_preview(doc, msp)
 
@@ -313,14 +399,24 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
 
 @app.get("/")
 async def read_root():
-    for html_path in [
+    posibles_html = [
         os.path.join(PROJECT_ROOT, "frontend", "index.html"),
         os.path.join(BASE_DIR, "frontend", "index.html"),
-        os.path.join(BASE_DIR, "index.html")
-    ]:
+        os.path.join(PROJECT_ROOT, "Frontend", "index.html"),
+        os.path.join(BASE_DIR, "Frontend", "index.html"),
+        os.path.join(BASE_DIR, "index.html"),
+        os.path.join(PROJECT_ROOT, "index.html")
+    ]
+
+    for html_path in posibles_html:
         if os.path.exists(html_path):
             return FileResponse(html_path)
-    return {"error": "index.html no encontrado"}
+
+    return {
+        "status": "Cotizador API ANDMAX Laser activo",
+        "error": "No se encontró index.html",
+        "rutas_buscadas": posibles_html
+    }
 
 
 @app.post("/cotizar")
@@ -331,7 +427,11 @@ async def cotizar(
     incluye_material: bool = Form(True)
 ):
     _limpiar_cotizaciones_viejas()
+
     original_filename = file.filename or "archivo.dxf"
+    if not original_filename.lower().endswith(".dxf"):
+        raise HTTPException(status_code=400, detail="Solo se aceptan archivos .dxf")
+
     safe_name = nombre_archivo_seguro(original_filename)
     temp_filepath = os.path.join(TEMP_DIR, safe_name)
 
@@ -342,15 +442,17 @@ async def cotizar(
             if size > MAX_FILE_SIZE_BYTES:
                 buffer.close()
                 os.remove(temp_filepath)
-                raise HTTPException(status_code=413, detail="Archivo demasiado grande")
+                raise HTTPException(status_code=413, detail="Archivo demasiado grande (máx. 15MB)")
             buffer.write(chunk)
 
     try:
         resultado = calcular_cotizacion(temp_filepath, material, espesor, incluye_material)
+    except HTTPException:
+        raise
     except Exception as e:
         if os.path.exists(temp_filepath):
             os.remove(temp_filepath)
-        raise HTTPException(status_code=400, detail=f"Error procesando DXF: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"No se pudo procesar el archivo DXF: {str(e)}")
 
     quote_id = uuid.uuid4().hex
     with QUOTES_LOCK:
@@ -367,7 +469,13 @@ async def cotizar(
             "used": False,
         }
 
-    return {"quote_id": quote_id, "archivo": original_filename, **resultado, "material": material, "espesor": espesor}
+    return {
+        "quote_id": quote_id,
+        "archivo": original_filename,
+        **resultado,
+        "material": material,
+        "espesor": espesor,
+    }
 
 
 @app.post("/crear_pago")
@@ -378,26 +486,75 @@ async def crear_pago(quote_id: str = Form(...)):
     with QUOTES_LOCK:
         quote = QUOTES.get(quote_id)
 
-    if not quote or quote["used"]:
-        raise HTTPException(status_code=404, detail="Cotización inválida o ya utilizada.")
+    if not quote:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada o vencida. Volvé a subir el archivo.")
+    if quote["used"]:
+        raise HTTPException(status_code=409, detail="Esta cotización ya generó un pago.")
+
+    monto = float(quote["total_estimado"])
+    titulo = quote["original_filename"]
+
+    external_data = f"{quote_id}"
 
     preference_data = {
-        "items": [{
-            "title": f"Corte Láser DXF: {quote['original_filename']}",
-            "quantity": 1,
-            "currency_id": "ARS",
-            "unit_price": float(quote["total_estimado"])
-        }],
-        "external_reference": quote_id,
+        "items": [
+            {
+                "title": f"Corte Láser DXF: {titulo}",
+                "quantity": 1,
+                "currency_id": "ARS",
+                "unit_price": float(monto)
+            }
+        ],
+        "external_reference": external_data,
         "notification_url": "https://andmax-cotizador-api.onrender.com/webhook"
     }
 
     try:
-        pref = sdk.preference().create(preference_data)
+        preference_response = sdk.preference().create(preference_data)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
+
+    if preference_response.get("status") not in [200, 201]:
+        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago en Mercado Pago")
 
     with QUOTES_LOCK:
         QUOTES[quote_id]["used"] = True
 
-    return {"init_point": pref["response"]["init_point"]}
+    preference = preference_response["response"]
+    return {"init_point": preference["init_point"]}
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    query_params = request.query_params
+    topic = query_params.get("topic") or query_params.get("type")
+
+    if topic == "payment":
+        payment_id = query_params.get("id") or query_params.get("data.id")
+        if payment_id and sdk:
+            try:
+                payment_response = sdk.payment().get(payment_id)
+                payment_info = payment_response.get("response", {})
+
+                if payment_info.get("status") == "approved":
+                    quote_id = payment_info.get("external_reference", "")
+                    with QUOTES_LOCK:
+                        quote = QUOTES.get(quote_id)
+
+                    if quote:
+                        monto = payment_info.get("transaction_amount", quote["total_estimado"])
+                        email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
+
+                        enviar_email_notificacion(
+                            email_cliente=email_cliente,
+                            filepath=quote["filepath"],
+                            material=quote["material"],
+                            espesor=quote["espesor"],
+                            metros=str(quote["metros_corte"]),
+                            piercings=str(quote["piercings"]),
+                            monto=str(monto)
+                        )
+            except Exception as e:
+                print(f"Error procesando webhook de pago: {e}")
+
+    return {"status": "ok"}
