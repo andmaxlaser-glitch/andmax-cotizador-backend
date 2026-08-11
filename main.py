@@ -17,13 +17,23 @@ from ezdxf import path, bbox
 
 app = FastAPI()
 
-# Directorio base del proyecto
+# --------------------------------------------------------------------------
+# Rutas del Proyecto y Archivos Estáticos (Soporte para carpeta /frontend)
+# --------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# --------------------------------------------------------------------------
-# Archivos Estáticos e Interfaz Web
-# --------------------------------------------------------------------------
-static_dir = os.path.join(BASE_DIR, "static")
+# Intentar encontrar la carpeta frontend tanto si está al mismo nivel que main.py
+# como si main.py está dentro de /backend (subiendo un nivel).
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+
+FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+if not os.path.exists(FRONTEND_DIR):
+    FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
+
+static_dir = os.path.join(FRONTEND_DIR, "static")
+if not os.path.exists(static_dir):
+    static_dir = os.path.join(BASE_DIR, "static")
+
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -268,11 +278,20 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
 
 @app.get("/")
 async def read_root():
-    """Servir index.html si existe en la raíz del proyecto."""
-    html_path = os.path.join(BASE_DIR, "index.html")
-    if os.path.exists(html_path):
-        return FileResponse(html_path)
-    return {"status": "Cotizador API ANDMAX Laser activo (Falta index.html en la raíz)"}
+    """Servir index.html buscando primero en la carpeta frontend y luego en la raíz."""
+    html_path_frontend = os.path.join(FRONTEND_DIR, "index.html")
+    html_path_root = os.path.join(BASE_DIR, "index.html")
+
+    if os.path.exists(html_path_frontend):
+        return FileResponse(html_path_frontend)
+    elif os.path.exists(html_path_root):
+        return FileResponse(html_path_root)
+
+    return {
+        "status": "Cotizador API ANDMAX Laser activo",
+        "error": "No se encontró index.html ni en /frontend ni en la raíz del proyecto",
+        "rutas_buscadas": [html_path_frontend, html_path_root]
+    }
 
 
 @app.post("/cotizar")
