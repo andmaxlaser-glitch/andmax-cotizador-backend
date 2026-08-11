@@ -102,67 +102,79 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG extrayendo todos los puntos absolutos de todas las entidades para abarcar la pieza completa."""
+    """Genera un SVG extrayendo directamente los puntos y vértices crudos de todas las entidades del DXF."""
     try:
         paths_data = []
         all_points_x = []
         all_points_y = []
 
-        def extraer_puntos_y_trazos(entidades):
+        def extraer_de_contenedor(entidades):
             for entity in entidades:
                 dxftype = entity.dxftype()
-                
-                # Si es un bloque insertado, intentamos procesar sus sub-entidades
+
+                # Si es un bloque insertado
                 if dxftype == 'INSERT':
                     try:
                         if hasattr(entity, 'virtual_entities'):
-                            extraer_puntos_y_trazos(entity.virtual_entities())
+                            extraer_de_contenedor(entity.virtual_entities())
                     except Exception:
                         pass
                     continue
 
                 try:
+                    # 1. Intento directo por ezdxf path
                     p = path.make_path(entity)
                     d_str = path.to_svg_path_data([p])
                     if d_str and d_str.strip():
                         paths_data.append(d_str)
+                        # Extraer puntos de control del path
                         for pt in p.control_points():
-                            all_points_x.append(pt[0])
-                            all_points_y.append(pt[1])
+                            all_points_x.append(float(pt[0]))
+                            all_points_y.append(float(pt[1]))
                 except Exception:
-                    # Respaldo manual por tipo de entidad si path falla
-                    try:
-                        if dxftype == 'LINE':
-                            s, e = entity.dxf.start, entity.dxf.end
-                            all_points_x.extend([s.x, e.x])
-                            all_points_y.extend([s.y, e.y])
-                            paths_data.append(f"M {s.x:.2f} {s.y:.2f} L {e.x:.2f} {e.y:.2f}")
-                        elif dxftype == 'CIRCLE':
-                            c, r = entity.dxf.center, entity.dxf.radius
-                            all_points_x.extend([c.x - r, c.x + r])
-                            all_points_y.extend([c.y - r, c.y + r])
-                            paths_data.append(f"M {c.x - r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x + r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x - r:.2f} {c.y:.2f}")
-                        elif dxftype == 'ARC':
-                            c, r = entity.dxf.center, entity.dxf.radius
-                            all_points_x.extend([c.x - r, c.x + r])
-                            all_points_y.extend([c.y - r, c.y + r])
-                    except Exception:
-                        continue
+                    pass
 
-        # Recorremos el modelspace principal
-        extraer_puntos_y_trazos(msp)
+                # 2. Extracción directa y segura por tipo de entidad (Evita que falten LWPolylines o Arcos grandes)
+                try:
+                    if dxftype == 'LINE':
+                        s, e = entity.dxf.start, entity.dxf.end
+                        all_points_x.extend([s.x, e.x])
+                        all_points_y.extend([s.y, e.y])
+                        paths_data.append(f"M {s.x:.2f} {s.y:.2f} L {e.x:.2f} {e.y:.2f}")
 
-        # Si aún faltan puntos, usamos el bbox nativo del documento como respaldo total
+                    elif dxftype == 'CIRCLE':
+                        c, r = entity.dxf.center, entity.dxf.radius
+                        all_points_x.extend([c.x - r, c.x + r])
+                        all_points_y.extend([c.y - r, c.y + r])
+                        paths_data.append(f"M {c.x - r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x + r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x - r:.2f} {c.y:.2f}")
+
+                    elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
+                        puntos = list(entity.get_points(format='xy'))
+                        if puntos:
+                            pts_str = []
+                            for idx, pt in enumerate(puntos):
+                                px, py = float(pt[0]), float(pt[1])
+                                all_points_x.append(px)
+                                all_points_y.append(py)
+                                prefix = "M" if idx == 0 else "L"
+                                pts_str.append(f"{prefix} {px:.2f} {py:.2f}")
+                            if entity.closed:
+                                pts_str.append("Z")
+                            paths_data.append(" ".join(pts_str))
+                except Exception:
+                    continue
+
+        # Recorremos el modelspace principal y también los bloques definidos globalmente en el documento
+        extraer_de_contenedor(msp)
+        for block in doc.blocks:
+            if not block.name.startswith('*'):  # Ignorar bloques internos del sistema
+                extraer_de_contenedor(block)
+
         if not all_points_x or not all_points_y:
-            ext = bbox.extents(msp)
-            if ext.has_data:
-                min_x, min_y = ext.extmin.x, ext.extmin.y
-                max_x, max_y = ext.extmax.x, ext.extmax.y
-            else:
-                return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles para vista previa</p>"
-        else:
-            min_x, max_x = min(all_points_x), max(all_points_x)
-            min_y, max_y = min(all_points_y), max(all_points_y)
+            return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles para vista previa</p>"
+
+        min_x, max_x = min(all_points_x), max(all_points_x)
+        min_y, max_y = min(all_points_y), max(all_points_y)
 
         width = max_x - min_x
         height = max_y - min_y
@@ -176,7 +188,7 @@ def generar_svg_preview(doc, msp) -> str:
         vb_w = width + (margin * 2)
         vb_h = height + (margin * 2)
 
-        stroke_width = max(max(width, height) / 200.0, 0.5)
+        stroke_width = max(max(width, height) / 220.0, 0.4)
 
         paths_svg = [
             f'<path d="{d}" stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round" stroke-linejoin="round" />'
