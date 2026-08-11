@@ -3,302 +3,125 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ANDMAX Laser - Cotizador Online</title>
+    <title>ANDMAX Laser - Cotizador y Carrito</title>
+    <!-- Estilos de tu proyecto -->
     <style>
-        :root {
-            --bg-color: #121212;
-            --card-bg: #1e1e1e;
-            --accent: #e63946;
-            --text: #f1f1f1;
-            --text-muted: #a0a0a0;
-            --border: #333;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text);
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            justify-content: center;
-        }
-        .container {
-            max-width: 500px;
-            width: 100%;
-            background: var(--card-bg);
-            padding: 24px;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-        }
-        h1 { font-size: 1.4rem; text-align: center; margin-bottom: 20px; color: var(--accent); }
-        .form-group { margin-bottom: 16px; }
-        label { display: block; font-size: 0.9rem; margin-bottom: 6px; color: var(--text-muted); }
-        select, input[type="file"], input[type="text"] {
-            width: 100%;
-            padding: 10px;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            background: #2a2a2a;
-            color: var(--text);
-            box-sizing: border-box;
-        }
-        .checkbox-group { display: flex; align-items: center; gap: 8px; }
-        .checkbox-group input { width: auto; }
-        button {
-            width: 100%;
-            padding: 12px;
-            background: var(--accent);
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-size: 1rem;
-            font-weight: bold;
-            cursor: pointer;
-            margin-top: 10px;
-        }
-        button:hover { opacity: 0.9; }
-        button:disabled { background: #555; cursor: not-allowed; }
-        #result { margin-top: 20px; padding: 16px; background: #252525; border-radius: 8px; display: none; }
-        #preview { margin-top: 12px; background: #000; border-radius: 6px; padding: 10px; text-align: center; }
-        .price { font-size: 1.5rem; color: #4caf50; font-weight: bold; text-align: center; margin: 12px 0; }
-        .info-adicional-pieza { margin-top: 12px; padding-top: 10px; border-top: 1px solid #333; font-size: 14px; color: #ccc; }
-        .info-adicional-pieza p { margin: 6px 0; }
-        
-        /* Estilos del Carrito */
-        #carrito-section { margin-top: 30px; padding: 16px; background: #1a1a1a; border-radius: 8px; border: 1px solid var(--border); }
-        .carrito-item { display: flex; justify-content: space-between; align-items: center; background: #222; padding: 10px; margin-bottom: 8px; border-radius: 6px; font-size: 13px; color: #fff; }
-        .btn-eliminar-item { background: transparent; color: #ef4444; border: none; cursor: pointer; font-size: 12px; margin-top: 4px; width: auto; padding: 0; }
-        .btn-eliminar-item:hover { text-decoration: underline; }
+        body { font-family: sans-serif; background: #121212; color: #fff; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
+        .opciones-envio label { display: block; margin: 10px 0; cursor: pointer; }
+        .input-form { width: 100%; padding: 10px; margin: 6px 0 12px 0; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px; box-sizing: border-box; }
+        .btn-pagar { background: #009ee3; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 20px; }
+        .btn-pagar:hover { background: #0082be; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>ANDMAX LASER - Cotizador</h1>
-        <form id="quoteForm">
-            <div class="form-group">
-                <label for="file">Archivo DXF:</label>
-                <input type="file" id="file" name="file" accept=".dxf" required>
-            </div>
-            <div class="form-group">
-                <label for="material">Material:</label>
-                <select id="material" name="material">
-                    <option value="acero_inoxidable">Acero Inoxidable (316/L, 304)</option>
-                    <option value="acero_carbono">Acero al Carbono / Hierro</option>
-                    <option value="aluminio">Aluminio</option>
-                    <option value="mdf">MDF</option>
-                    <option value="acrilico">Acrílico</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="espesor">Espesor (mm):</label>
-                <select id="espesor" name="espesor">
-                    <option value="1">1.0 mm</option>
-                    <option value="2">2.0 mm</option>
-                    <option value="3" selected>3.0 mm</option>
-                    <option value="4">4.0 mm</option>
-                    <option value="5">5.0 mm</option>
-                    <option value="6">6.0 mm</option>
-                    <option value="8">8.0 mm</option>
-                    <option value="10">10.0 mm</option>
-                </select>
-            </div>
-            <div class="form-group checkbox-group">
-                <input type="checkbox" id="incluye_material" name="incluye_material" checked>
-                <label for="incluye_material" style="margin:0;">Incluir provisión de material</label>
-            </div>
-            <button type="submit" id="btnCotizar">Calcular Cotización</button>
-        </form>
 
-        <div id="result">
-            <div id="preview"></div>
-            <p><strong>Archivo:</strong> <span id="resArchivoNombre"></span></p>
-            <p><strong>Metros de corte:</strong> <span id="resMetros"></span> m</p>
-            <p><strong>Perforaciones:</strong> <span id="resPiercings"></span></p>
-            
-            <div class="info-adicional-pieza">
-                <p>📐 <strong>Dimensiones:</strong> <span id="lbl-dimensiones">-</span> mm</p>
-                <p>🧩 <strong>Piezas detectadas:</strong> <span id="lbl-piezas">-</span></p>
-            </div>
+<div class="container">
+    <h2>Finalizar Pedido de Corte</h2>
 
-            <div class="price">$<span id="resTotal"></span> ARS</div>
-            
-            <button type="button" id="btnAgregarCarrito" style="background:#28a745; margin-top: 5px;">➕ Agregar este archivo al Carrito</button>
-        </div>
-
-        <!-- SECCIÓN DEL CARRITO DE COMPRAS Y ENVÍO -->
-        <div id="carrito-section">
-            <h3 style="color: #fff; margin-top: 0; font-size: 1.1rem;">🛒 Tu Carrito de Cotizaciones</h3>
-            
-            <div id="carrito-items" style="margin-bottom: 12px;">
-                <p style="color: var(--text-muted); font-size: 13px; margin: 0;">El carrito está vacío. Cotiza y agrega archivos para pagar todo junto.</p>
-            </div>
-
-            <!-- Opciones de Envío / Retiro -->
-            <div id="opciones-envio" style="display: none; margin-bottom: 15px; padding-top: 10px; border-top: 1px solid var(--border);">
-                <label style="margin-bottom: 8px; font-weight: bold; color: #fff;">Método de entrega:</label>
-                <div style="display: flex; flex-direction: column; gap: 8px; font-size: 14px; margin-top: 5px;">
-                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text);">
-                        <input type="radio" name="tipoEnvio" value="retiro" data-costo="0" checked onchange="actualizarTotalCarrito()" style="width: auto;"> 
-                        Retiro por el taller (Gratis)
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text);">
-                        <input type="radio" name="tipoEnvio" value="local" data-costo="5000" onchange="actualizarTotalCarrito()" style="width: auto;"> 
-                        Envío Local / GBA ($5.000)
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text);">
-                        <input type="radio" name="tipoEnvio" value="correo" data-costo="12000" onchange="actualizarTotalCarrito()" style="width: auto;"> 
-                        Envío al Interior - Correo Argentino ($12.000)
-                    </label>
-                </div>
-            </div>
-
-            <div id="carrito-resumen" style="border-top: 1px solid var(--border); padding-top: 12px; display: none;">
-                <div style="display: flex; justify-content: space-between; color: #fff; font-size: 16px; font-weight: bold; margin-bottom: 12px;">
-                    <span>Total Carrito:</span>
-                    <span id="carrito-total-precio" style="color: #4caf50;">$0.00</span>
-                </div>
-                <button type="button" id="btnPagarCarrito" style="background:#009ee3; margin-top: 0;">Pagar Todo con Mercado Pago</button>
-            </div>
-        </div>
+    <!-- Sección de selección de tipo de envío -->
+    <div class="opciones-envio">
+        <h3>Seleccioná el método de entrega:</h3>
+        <label>
+            <input type="radio" name="tipoEnvio" value="retiro" checked onchange="toggleCamposEnvio()"> 
+            Retiro por el taller (Gratis - Campana)
+        </label>
+        <label>
+            <input type="radio" name="tipoEnvio" value="local" onchange="toggleCamposEnvio()"> 
+            Envío Local / GBA ($5.000)
+        </label>
+        <label>
+            <input type="radio" name="tipoEnvio" value="correo" onchange="toggleCamposEnvio()"> 
+            Correo Argentino - Todo el país ($12.000)
+        </label>
     </div>
 
-    <script>
-        let ultimaCotizacionActual = null;
-        let carritoItems = [];
+    <!-- Formulario de dirección (Oculto por defecto si es retiro) -->
+    <div id="seccion-direccion" style="display: none; margin-top: 20px; border-top: 1px solid #333; padding-top: 15px;">
+        <h3>Datos de Envío</h3>
+        <input type="text" id="envioNombre" placeholder="Nombre y Apellido" class="input-form">
+        <input type="text" id="envioTelefono" placeholder="Teléfono de contacto (Ej: 3489...)" class="input-form">
+        <input type="text" id="envioDireccion" placeholder="Calle, Número, Piso/Depto" class="input-form">
+        <input type="text" id="envioLocalidad" placeholder="Localidad / Partido / Provincia" class="input-form">
+        <input type="text" id="envioCP" placeholder="Código Postal" class="input-form">
+    </div>
 
-        document.getElementById('quoteForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const btn = document.getElementById('btnCotizar');
-            btn.disabled = true;
-            btn.innerText = 'Procesando DXF...';
+    <!-- Botón para procesar el pago -->
+    <button type="button" class="btn-pagar" onclick="procesarPagoCarrito()">Pagar con Mercado Pago</button>
+</div>
 
-            const formData = new FormData();
-            const fileInput = document.getElementById('file');
-            formData.append('file', fileInput.files[0]);
-            formData.append('material', document.getElementById('material').value);
-            formData.append('espesor', document.getElementById('espesor').value);
-            formData.append('incluye_material', document.getElementById('incluye_material').checked);
+<script>
+    // Función para mostrar u ocultar el formulario según la opción elegida
+    function toggleCamposEnvio() {
+        const tipo = document.querySelector('input[name="tipoEnvio"]:checked').value;
+        const seccionDir = document.getElementById('seccion-direccion');
+        
+        if (tipo === 'retiro') {
+            seccionDir.style.display = 'none';
+        } else {
+            seccionDir.style.display = 'block';
+        }
+    }
 
-            try {
-                const res = await fetch('/cotizar', { method: 'POST', body: formData });
-                const data = await res.json();
+    // Función que recopila los datos, valida (si es envío) y llama al backend
+    async function procesarPagoCarrito() {
+        // Obtenemos los IDs de las cotizaciones actuales en tu carrito (ejemplo de array de IDs)
+        // Asegurate de reemplazar esto con tu lógica real donde guardás los quote_ids del carrito
+        const idsDeCotizaciones = window.carritoQuoteIds || []; 
 
-                if (!res.ok) throw new Error(data.detail || 'Error en el servidor');
+        if (idsDeCotizaciones.length === 0) {
+            alert("El carrito está vacío o no hay archivos cotizados.");
+            return;
+        }
 
-                ultimaCotizacionActual = {
-                    ...data,
-                    archivo_nombre: fileInput.files[0].name
-                };
+        const tipoEnvio = document.querySelector('input[name="tipoEnvio"]:checked').value;
+        
+        // Validar campos obligatorios si elige envío
+        let nombre = "", telefono = "", direccion = "", localidad = "", cp = "";
+        
+        if (tipoEnvio !== 'retiro') {
+            nombre = document.getElementById("envioNombre").value.trim();
+            telefono = document.getElementById("envioTelefono").value.trim();
+            direccion = document.getElementById("envioDireccion").value.trim();
+            localidad = document.getElementById("envioLocalidad").value.trim();
+            cp = document.getElementById("envioCP").value.trim();
 
-                document.getElementById('resArchivoNombre').innerText = fileInput.files[0].name;
-                document.getElementById('resMetros').innerText = data.metros_corte;
-                document.getElementById('resPiercings').innerText = data.piercings;
-                document.getElementById('lbl-dimensiones').innerText = `${data.ancho_mm} x ${data.alto_mm}`;
-                document.getElementById('lbl-piezas').innerText = data.piezas_detectadas;
-                document.getElementById('resTotal').innerText = data.total_estimado.toLocaleString('es-AR');
-                document.getElementById('preview').innerHTML = data.svg_preview;
-                document.getElementById('result').style.display = 'block';
-            } catch (err) {
-                alert('Error: ' + err.message);
-            } finally {
-                btn.disabled = false;
-                btn.innerText = 'Calcular Cotización';
-            }
-        });
-
-        document.getElementById('btnAgregarCarrito').addEventListener('click', () => {
-            if (!ultimaCotizacionActual) return;
-
-            if (carritoItems.some(item => item.quote_id === ultimaCotizacionActual.quote_id)) {
-                alert("Este archivo ya se encuentra agregado en el carrito.");
+            if (!nombre || !telefono || !direccion || !localidad || !cp) {
+                alert("Por favor, completá todos los datos de envío antes de continuar.");
                 return;
             }
+        }
 
-            carritoItems.push(ultimaCotizacionActual);
-            actualizarVistaCarrito();
-            alert("¡Archivo agregado al carrito correctamente!");
-        });
+        // Armamos el FormData para enviar a tu API en FastAPI
+        const formData = new FormData();
+        formData.append("item_ids", idsDeCotizaciones.join(","));
+        formData.append("tipo_envio", tipoEnvio);
+        formData.append("nombre_envio", nombre);
+        formData.append("telefono_envio", telefono);
+        formData.append("direccion_envio", direccion);
+        formData.append("localidad_envio", localidad);
+        formData.append("cp_envio", cp);
 
-        function actualizarVistaCarrito() {
-            const contenedor = document.getElementById('carrito-items');
-            const resumen = document.getElementById('carrito-resumen');
-            const opcionesEnvio = document.getElementById('opciones-envio');
-
-            if (carritoItems.length === 0) {
-                contenedor.innerHTML = '<p style="color: var(--text-muted); font-size: 13px; margin: 0;">El carrito está vacío. Cotiza y agrega archivos para pagar todo junto.</p>';
-                resumen.style.display = 'none';
-                opcionesEnvio.style.display = 'none';
-                return;
-            }
-
-            let html = '';
-            carritoItems.forEach((item, index) => {
-                html += `
-                    <div class="carrito-item">
-                        <div>
-                            <strong>${item.archivo_nombre}</strong><br>
-                            <span style="color: var(--text-muted); font-size: 11px;">Material: ${item.material.toUpperCase()} | Espesor: ${item.espesor}mm</span>
-                        </div>
-                        <div style="text-align: right;">
-                            <span style="color: #4caf50; font-weight: bold;">$${item.total_estimado.toLocaleString('es-AR')}</span><br>
-                            <button type="button" class="btn-eliminar-item" onclick="eliminarDelCarrito(${index})">Eliminar</button>
-                        </div>
-                    </div>
-                `;
+        try {
+            const response = await fetch('/crear_pago_carrito', {
+                method: 'POST',
+                body: formData
             });
 
-            contenedor.innerHTML = html;
-            opcionesEnvio.style.display = 'block';
-            resumen.style.display = 'block';
-            
-            actualizarTotalCarrito();
-        }
+            const data = await response.json();
 
-        function actualizarTotalCarrito() {
-            let precioSubtotal = carritoItems.reduce((acc, item) => acc + item.total_estimado, 0);
-            
-            const radioSeleccionado = document.querySelector('input[name="tipoEnvio"]:checked');
-            let costoEnvio = radioSeleccionado ? parseFloat(radioSeleccionado.getAttribute('data-costo')) : 0;
-            
-            let totalFinal = precioSubtotal + costoEnvio;
-
-            document.getElementById('carrito-total-precio').innerText = `$${totalFinal.toLocaleString('es-AR')} ARS`;
-        }
-
-        function eliminarDelCarrito(index) {
-            carritoItems.splice(index, 1);
-            actualizarVistaCarrito();
-        }
-
-        document.getElementById('btnPagarCarrito').addEventListener('click', async () => {
-            if (carritoItems.length === 0) return;
-
-            const btn = document.getElementById('btnPagarCarrito');
-            btn.disabled = true;
-            btn.innerText = 'Generando link de pago conjunto...';
-
-            const idsString = carritoItems.map(item => item.quote_id).join(',');
-            const radioSeleccionado = document.querySelector('input[name="tipoEnvio"]:checked');
-            const tipoEnvioSeleccionado = radioSeleccionado ? radioSeleccionado.value : 'retiro';
-
-            const formData = new FormData();
-            formData.append('item_ids', idsString);
-            formData.append('tipo_envio', tipoEnvioSeleccionado);
-
-            try {
-                const res = await fetch('/crear_pago_carrito', { method: 'POST', body: formData });
-                const data = await res.json();
-
-                if (!res.ok) throw new Error(data.detail || 'Error al generar el pago del carrito');
-
+            if (response.ok && data.init_point) {
+                // Redirige al checkout de Mercado Pago
                 window.location.href = data.init_point;
-            } catch (err) {
-                alert('Error: ' + err.message);
-                btn.disabled = false;
-                btn.innerText = 'Pagar Todo con Mercado Pago';
+            } else {
+                alert("Error al generar el pago: " + (data.detail || "Intente nuevamente."));
             }
-        });
-    </script>
+        } catch (error) {
+            console.error("Error de conexión:", error);
+            alert("Ocurrió un error al conectar con el servidor de pagos.");
+        }
+    }
+</script>
+
 </body>
 </html>
