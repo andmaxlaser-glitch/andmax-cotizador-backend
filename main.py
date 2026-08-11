@@ -200,11 +200,11 @@ def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> 
     }
 
     COSTOS_MATERIAL_BASE = {
-        "mdf": 5000.0
-        "acrilico": 8000.0
-        "acero_carbono": 120000.0
-        "acero_inoxidable": 150000.0
-        "aluminio": 130000.0
+        "mdf": 5000.0,
+        "acrilico": 8000.0,
+        "acero_carbono": 120000.0,
+        "acero_inoxidable": 150000.0,
+        "aluminio": 130000.0,
     }
 
     mat_str = str(material_input).lower().strip()
