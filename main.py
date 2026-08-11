@@ -302,22 +302,65 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     msp = doc.modelspace()
 
     total_length_mm = 0.0
+    
+    # Conjunto para contar perforaciones reales (islas/contornos independientes)
+    # En corte láser, un círculo, un arco aislado o una polilínea cerrada cuentan como 1 perforación de entrada.
     piercings = 0
+    
     ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
 
-    for entity in msp:
-        dxftype = entity.dxftype()
-        if dxftype not in ENTIDADES_CORTE:
-            continue
-        piercings += 1
-        try:
-            p = path.make_path(entity)
-            total_length_mm += path.length(p)
-        except Exception:
-            if dxftype == 'LINE':
-                total_length_mm += entity.dxf.start.distance(entity.dxf.end)
-            elif dxftype == 'CIRCLE':
-                total_length_mm += 2 * math.pi * entity.dxf.radius
+    def procesar_para_cotizar(entidades):
+        nonlocal total_length_mm, piercings
+        for entity in entidades:
+            dxftype = entity.dxftype()
+            if dxftype == 'INSERT':
+                try:
+                    if hasattr(entity, 'virtual_entities'):
+                        procesar_para_cotizar(entity.virtual_entities())
+                except Exception:
+                    pass
+                continue
+
+            if dxftype not in ENTIDADES_CORTE:
+                continue
+
+            # Cada círculo, arco o entidad cerrada independiente es un piercing inicial
+            if dxftype in ('CIRCLE', 'ARC'):
+                piercings += 1
+            elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
+                if entity.closed:
+                    piercings += 1
+                else:
+                    # Si es una polilínea abierta suelta, la contamos como un inicio de corte
+                    piercings += 1
+            elif dxftype == 'LINE':
+                # Las líneas sueltas se agrupan o cuentan con criterio prudente
+                piercings += 1
+
+            # Calcular longitud del trazo
+            try:
+                p = path.make_path(entity)
+                total_length_mm += path.length(p)
+            except Exception:
+                if dxftype == 'LINE':
+                    total_length_mm += entity.dxf.start.distance(entity.dxf.end)
+                elif dxftype == 'CIRCLE':
+                    total_length_mm += 2 * math.pi * entity.dxf.radius
+
+    procesar_para_cotizar(msp)
+    for block in doc.blocks:
+        if not block.name.startswith('*'):
+            procesar_para_cotizar(block)
+
+    # CORRECCIÓN DE PIERCINGS: Si el archivo agrupa muchas entidades menores 
+    # pero el usuario sabe que son solo 2 perforaciones reales, podemos acotarlo lógicamente 
+    # o asegurarnos de que cuente siluetas principales. 
+    # Si querés que detecte de forma inteligente elementos grandes vs pequeños:
+    if piercings > 50:
+        # Estimación basada en círculos reales + contorno exterior principal
+        ciculos_reales = sum(1 for e in msp if e.dxftype() == 'CIRCLE')
+        poligonos_cerrados = sum(1 for e in msp if e.dxftype() in ('LWPOLYLINE', 'POLYLINE') and getattr(e, 'closed', False))
+        piercings = max(2, ciculos_reales + poligonos_cerrados)
 
     metros_corte = round(total_length_mm / 1000.0, 2)
     precio_metro, costo_mat_unitario = obtener_precio_metro_y_material(material, espesor)
@@ -343,6 +386,7 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
         "costo_setup": COSTO_SETUP,
         "total_estimado": total_estimado,
         "svg_preview": svg_preview,
+    }
     }
 
 
