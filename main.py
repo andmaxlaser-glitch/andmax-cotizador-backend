@@ -302,11 +302,11 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     msp = doc.modelspace()
 
     total_length_mm = 0.0
-    
-    # Lista para recolectar entidades válidas de corte y sus áreas/envolventes o conteo inteligente
     ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
 
     entidades_totales = []
+    all_points_x = []
+    all_points_y = []
 
     def procesar_para_cotizar(entidades):
         nonlocal total_length_mm, entidades_totales
@@ -325,37 +325,49 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
 
             entidades_totales.append(entity)
 
-            # Calcular longitud del trazo
+            # Recolectar puntos para las dimensiones de la pieza
             try:
                 p = path.make_path(entity)
                 total_length_mm += path.length(p)
+                for pt in p.control_points():
+                    all_points_x.append(float(pt[0]))
+                    all_points_y.append(float(pt[1]))
             except Exception:
                 if dxftype == 'LINE':
-                    total_length_mm += entity.dxf.start.distance(entity.dxf.end)
+                    s, e = entity.dxf.start, entity.dxf.end
+                    total_length_mm += s.distance(e)
+                    all_points_x.extend([s.x, e.x])
+                    all_points_y.extend([s.y, e.y])
                 elif dxftype == 'CIRCLE':
-                    total_length_mm += 2 * math.pi * entity.dxf.radius
+                    c, r = entity.dxf.center, entity.dxf.radius
+                    total_length_mm += 2 * math.pi * r
+                    all_points_x.extend([c.x - r, c.x + r])
+                    all_points_y.extend([c.y - r, c.y + r])
 
     procesar_para_cotizar(msp)
     for block in doc.blocks:
         if not block.name.startswith('*'):
             procesar_para_cotizar(block)
 
-    # CONTEO INTELIGENTE DE PIERCINGS:
-    # Agrupamos círculos independientes y polilíneas cerradas principales como piercings reales.
-    # Si hay entidades sueltas/líneas fragmentadas en exceso, evitamos inflar el número contando
-    # únicamente las geometrías cerradas principales o círculos, garantizando que si son 2 perforaciones, marque 2.
-    circulos_count = sum(1 for e in entidades_totales if e.dxftype() == 'CIRCLE')
-    polilineas_cerradas = sum(1 for e in entidades_totales if e.dxftype() in ('LWPOLYLINE', 'POLYLINE') and getattr(e, 'closed', False))
-    arcos_count = sum(1 for e in entidades_totales if e.dxftype() == 'ARC')
-    
-    piercings_calculados = circulos_count + polilineas_cerradas + arcos_count
-    
-    if piercings_calculados == 0:
-        # Respaldo por si el dibujo usa líneas sueltas cerradas formando figuras
-        lines_count = sum(1 for e in entidades_totales if e.dxftype() == 'LINE')
-        piercings = max(1, min(lines_count, 2))
+    # 1. CÁLCULO DE DIMENSIONES REALES (Ancho x Alto en mm)
+    if all_points_x and all_points_y:
+        ancho_pieza = round(max(all_points_x) - min(all_points_x), 2)
+        alto_pieza = round(max(all_points_y) - min(all_points_y), 2)
     else:
-        piercings = max(1, piercings_calculados)
+        ancho_pieza, alto_pieza = 0.0, 0.0
+
+    # 2. DETECCIÓN INTELIGENTE DE PIEZAS / ISLAS INDEPENDIENTES
+    # Contamos polilíneas cerradas y círculos principales como siluetas independientes de corte
+    poligonos_cerrados = sum(1 for e in entidades_totales if e.dxftype() in ('LWPOLYLINE', 'POLYLINE') and getattr(e, 'closed', False))
+    circulos_count = sum(1 for e in entidades_totales if e.dxftype() == 'CIRCLE')
+    
+    # Estimación de cantidad de piezas detectadas (si hay polilíneas cerradas, mandan ellas)
+    piezas_detectadas = max(1, poligonos_cerrados if poligonos_cerrados > 0 else (circulos_count if circulos_count > 0 else 1))
+
+    # Conteo de Piercings
+    arcos_count = sum(1 for e in entidades_totales if e.dxftype() == 'ARC')
+    piercings_calculados = circulos_count + poligonos_cerrados + arcos_count
+    piercings = max(1, piercings_calculados if piercings_calculados > 0 else 1)
 
     metros_corte = round(total_length_mm / 1000.0, 2)
     precio_metro, costo_mat_unitario = obtener_precio_metro_y_material(material, espesor)
@@ -375,6 +387,9 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     return {
         "metros_corte": metros_corte,
         "piercings": piercings,
+        "ancho_mm": ancho_pieza,
+        "alto_mm": alto_pieza,
+        "piezas_detectadas": piezas_detectadas,
         "precio_metro_aplicado": precio_metro,
         "costo_mecanizado": costo_mecanizado,
         "costo_material": costo_material,
