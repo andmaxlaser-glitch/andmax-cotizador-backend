@@ -18,10 +18,6 @@ app = FastAPI()
 # --------------------------------------------------------------------------
 # CORS
 # --------------------------------------------------------------------------
-# OJO: "*" + allow_credentials=True es una combinación inválida (los
-# navegadores la ignoran/rechazan). Si necesitás credenciales, listá los
-# orígenes explícitamente. Si no las necesitás (que es lo normal acá,
-# porque no usás cookies de sesión), dejá allow_credentials=False.
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 app.add_middleware(
@@ -46,14 +42,7 @@ MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
 ALLOWED_EXTENSIONS = {".dxf"}
 
 # --------------------------------------------------------------------------
-# Almacén de cotizaciones en memoria.
-# Guardamos acá el precio calculado por el SERVIDOR para que /crear_pago
-# nunca tenga que confiar en un monto que mande el cliente.
-#
-# NOTA: esto vive en memoria del proceso. Si el servicio corre con más de
-# un worker/instancia (ej. varios dynos en Render), una cotización creada
-# en un proceso puede no verse en otro. Para producción con más de una
-# instancia conviene mover esto a Redis o a una tabla en base de datos.
+# Almacén de cotizaciones en memoria
 # --------------------------------------------------------------------------
 QUOTES: dict[str, dict] = {}
 QUOTES_LOCK = Lock()
@@ -75,7 +64,6 @@ def _limpiar_cotizaciones_viejas():
 
 
 def nombre_archivo_seguro(filename: str) -> str:
-    """Evita path traversal y colisiones entre clientes distintos."""
     base = os.path.basename(filename or "archivo.dxf")
     base = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
     if not base.lower().endswith(".dxf"):
@@ -99,7 +87,6 @@ def generar_svg_preview(msp) -> str:
         if width <= 0 or height <= 0:
             return "<p style='color:#a0a0a0;'>Dimensiones de archivo no válidas</p>"
 
-        # Margen del 5% alrededor de la pieza
         margin = max(width, height) * 0.05
         vb_x = min_x - margin
         vb_y = min_y - margin
@@ -120,7 +107,6 @@ def generar_svg_preview(msp) -> str:
                 except Exception:
                     continue
 
-        # Invertimos el eje Y en SVG para coincidir con la orientación cartesiana del CAD
         svg_code = f'''<svg viewBox="{vb_x} {vb_y} {vb_w} {vb_h}" style="width:100%; height:100%; max-height:160px; transform: scaleY(-1);" xmlns="http://www.w3.org/2000/svg">
             <g>
                 {''.join(paths_svg)}
@@ -172,13 +158,26 @@ DETALLE DEL TRABAJO DE CORTE
         print(f"Error enviando email: {e}")
 
 
-def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
-    TARIFAS = {
+def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> tuple[float, float]:
+    """
+    Retorna una tupla: (precio_corte_por_metro, precio_material_por_metro)
+    Ajustado según los costos reales de mercado (ej. Inox 316/L, Carbono, MDF, etc.).
+    """
+    TARIFAS_CORTE = {
         "mdf": {1.0: 600.0, 2.0: 700.0, 3.0: 800.0, 5.0: 900.0, 8.0: 1000.0, 10.0: 1200.0},
         "acrilico": {1.0: 800.0, 2.0: 900.0, 3.0: 1000.0, 4.0: 1100.0, 5.0: 1200.0, 6.0: 1400.0, 8.0: 1600.0, 10.0: 1800.0},
         "acero_carbono": {1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0},
-        "acero_inoxidable": {1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0},
+        "acero_inoxidable": {1.0: 9500.0, 2.0: 11500.0, 3.0: 14945.0, 4.0: 16500.0, 5.0: 18500.0, 6.0: 17934.0, 8.0: 21000.0, 10.0: 24000.0, 12.0: 27000.0},
         "aluminio": {1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0}
+    }
+
+    # Costo base aproximado de materia prima por metro lineal de corte compensado por espesor
+    COSTOS_MATERIAL_BASE = {
+        "mdf": 800.0,
+        "acrilico": 1200.0,
+        "acero_carbono": 3500.0,
+        "acero_inoxidable": 6500.0,
+        "aluminio": 4500.0
     }
 
     mat_str = str(material_input).lower().strip()
@@ -190,21 +189,29 @@ def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
 
     raw_esp = str(espesor_input).replace(",", ".").strip()
     esp_clean = "".join([c for c in raw_esp if c.isdigit() or c == '.'])
-    try: espesor_val = float(esp_clean)
-    except ValueError: espesor_val = 3.0
+    try: 
+        espesor_val = float(esp_clean)
+    except ValueError: 
+        espesor_val = 3.0
 
-    tarifas_mat = TARIFAS[mat_key]
-    if espesor_val in tarifas_mat: return tarifas_mat[espesor_val]
+    tarifas_mat = TARIFAS_CORTE[mat_key]
+    if espesor_val in tarifas_mat: 
+        precio_corte = tarifas_mat[espesor_val]
+    else:
+        espesores = sorted(tarifas_mat.keys())
+        precio_corte = tarifas_mat[espesores[-1]]
+        for esp in espesores:
+            if esp >= espesor_val: 
+                precio_corte = tarifas_mat[esp]
+                break
 
-    espesores = sorted(tarifas_mat.keys())
-    for esp in espesores:
-        if esp >= espesor_val: return tarifas_mat[esp]
-    return tarifas_mat[espesores[-1]]
+    # Factor de ponderación por espesor para el material
+    precio_material = COSTOS_MATERIAL_BASE[mat_key] * (espesor_val / 3.0)
+    
+    return float(precio_corte), float(round(precio_material, 2))
 
 
 def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_material: bool) -> dict:
-    """Toda la lógica de precio vive acá para que /cotizar y la verificación
-    en /crear_pago usen exactamente el mismo cálculo."""
     doc = ezdxf.readfile(filepath)
     msp = doc.modelspace()
 
@@ -227,14 +234,18 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
                 total_length_mm += 2 * math.pi * entity.dxf.radius
 
     metros_corte = round(total_length_mm / 1000.0, 2)
-    precio_metro = obtener_precio_metro(material, espesor)
+    precio_metro, costo_mat_unitario = obtener_precio_metro_y_material(material, espesor)
 
     PRECIO_PIERCING = 50.0
     COSTO_SETUP = 1500.0
 
     costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
-    costo_material = round(metros_corte * 800.0, 2) if incluye_material else 0.0
+    costo_material = round(metros_corte * costo_mat_unitario, 2) if incluye_material else 0.0
     total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
+
+    # Validación estricta anti-NaN / Infinitos
+    if math.isnan(total_estimado) or math.isinf(total_estimado) or total_estimado <= 0:
+        raise ValueError("El cálculo de la cotización generó un valor inválido.")
 
     svg_preview = generar_svg_preview(msp)
 
@@ -285,11 +296,10 @@ async def cotizar(
         resultado = calcular_cotizacion(temp_filepath, material, espesor, incluye_material)
     except HTTPException:
         raise
-    except Exception:
-        # No exponemos el detalle interno de ezdxf al cliente.
+    except Exception as e:
         if os.path.exists(temp_filepath):
             os.remove(temp_filepath)
-        raise HTTPException(status_code=400, detail="No se pudo procesar el archivo DXF. Verificá que sea un DXF válido.")
+        raise HTTPException(status_code=400, detail=f"No se pudo procesar el archivo DXF: {str(e)}")
 
     quote_id = uuid.uuid4().hex
     with QUOTES_LOCK:
@@ -328,9 +338,7 @@ async def crear_pago(quote_id: str = Form(...)):
     if quote["used"]:
         raise HTTPException(status_code=409, detail="Esta cotización ya generó un pago.")
 
-    # El precio SIEMPRE sale de lo que calculó el servidor en /cotizar,
-    # nunca de lo que mande el cliente.
-    monto = quote["total_estimado"]
+    monto = float(quote["total_estimado"])
     titulo = quote["original_filename"]
 
     external_data = f"{quote_id}"
@@ -348,11 +356,14 @@ async def crear_pago(quote_id: str = Form(...)):
         "notification_url": "https://andmax-cotizador-api.onrender.com/webhook"
     }
 
-    preference_client = mercadopago.Preference(sdk)
-    preference_response = preference_client.create(preference_data)
+    try:
+        preference_client = mercadopago.Preference(sdk)
+        preference_response = preference_client.create(preference_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
 
     if preference_response.get("status") not in [200, 201]:
-        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago")
+        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago en Mercado Pago")
 
     with QUOTES_LOCK:
         QUOTES[quote_id]["used"] = True
@@ -369,28 +380,29 @@ async def webhook(request: Request):
     if topic == "payment":
         payment_id = query_params.get("id") or query_params.get("data.id")
         if payment_id and sdk:
-            payment_client = mercadopago.Payment(sdk)
-            payment_info = payment_client.get(payment_id)["response"]
+            try:
+                payment_client = mercadopago.Payment(sdk)
+                payment_info = payment_client.get(payment_id)["response"]
 
-            if payment_info.get("status") == "approved":
-                quote_id = payment_info.get("external_reference", "")
-                with QUOTES_LOCK:
-                    quote = QUOTES.get(quote_id)
+                if payment_info.get("status") == "approved":
+                    quote_id = payment_info.get("external_reference", "")
+                    with QUOTES_LOCK:
+                        quote = QUOTES.get(quote_id)
 
-                if quote:
-                    monto = payment_info.get("transaction_amount", quote["total_estimado"])
-                    email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
+                    if quote:
+                        monto = payment_info.get("transaction_amount", quote["total_estimado"])
+                        email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
 
-                    enviar_email_notificacion(
-                        email_cliente=email_cliente,
-                        filepath=quote["filepath"],
-                        material=quote["material"],
-                        espesor=quote["espesor"],
-                        metros=str(quote["metros_corte"]),
-                        piercings=str(quote["piercings"]),
-                        monto=str(monto)
-                    )
-                else:
-                    print(f"Webhook: no se encontró cotización para external_reference={quote_id}")
+                        enviar_email_notificacion(
+                            email_cliente=email_cliente,
+                            filepath=quote["filepath"],
+                            material=quote["material"],
+                            espesor=quote["espesor"],
+                            metros=str(quote["metros_corte"]),
+                            piercings=str(quote["piercings"]),
+                            monto=str(monto)
+                        )
+            except Exception as e:
+                print(f"Error procesando webhook de pago: {e}")
 
     return {"status": "ok"}
