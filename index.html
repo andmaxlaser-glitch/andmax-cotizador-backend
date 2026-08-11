@@ -3,122 +3,144 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ANDMAX Laser - Cotizador y Carrito</title>
-    <!-- Estilos de tu proyecto -->
+    <title>ANDMAX Laser - Cotizador</title>
     <style>
-        body { font-family: sans-serif; background: #121212; color: #fff; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; }
+        body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #fff; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        h2, h3 { color: #009ee3; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; }
+        input, select { width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px; box-sizing: border-box; }
+        button { background: #009ee3; color: white; border: none; padding: 12px 20px; border-radius: 4px; cursor: pointer; width: 100%; font-weight: bold; }
+        button:hover { background: #0082be; }
+        
+        /* Estilos de tabla y envíos */
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #252525; }
+        th, td { padding: 12px; border: 1px solid #444; text-align: left; }
         .opciones-envio label { display: block; margin: 10px 0; cursor: pointer; }
-        .input-form { width: 100%; padding: 10px; margin: 6px 0 12px 0; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px; box-sizing: border-box; }
-        .btn-pagar { background: #009ee3; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 20px; }
-        .btn-pagar:hover { background: #0082be; }
+        .input-form { width: 100%; padding: 10px; margin: 6px 0 12px 0; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>Finalizar Pedido de Corte</h2>
+    <h2>ANDMAX Laser - Cotizador</h2>
+    
+    <!-- FORMULARIO DE COTIZACIÓN -->
+    <div id="cotizador">
+        <div class="form-group">
+            <label>Subir archivo DXF:</label>
+            <input type="file" id="fileInput" accept=".dxf">
+        </div>
+        <div class="form-group">
+            <label>Material:</label>
+            <select id="materialInput">
+                <option value="mdf">MDF</option>
+                <option value="acrilico">Acrílico</option>
+                <option value="acero_carbono">Acero al Carbono</option>
+                <option value="acero_inoxidable">Acero Inoxidable</option>
+                <option value="aluminio">Aluminio</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Espesor (mm):</label>
+            <input type="number" id="espesorInput" value="3" step="0.5">
+        </div>
+        <button onclick="realizarCotizacion()">Cotizar Archivo</button>
+    </div>
 
-    <!-- Sección de selección de tipo de envío -->
-    <div class="opciones-envio">
+    <!-- TABLA DE RESULTADOS -->
+    <div id="resultados" style="margin-top: 30px;">
+        <h3>Carrito de Cortes</h3>
+        <table id="tablaCarrito">
+            <thead>
+                <tr>
+                    <th>Archivo</th>
+                    <th>Costo</th>
+                    <th>Estado</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Los resultados se agregarán aquí -->
+            </tbody>
+        </table>
+    </div>
+
+    <!-- SECCIÓN DE ENVÍOS (Nueva funcionalidad) -->
+    <div id="finalizar-pedido" style="margin-top: 40px; border-top: 2px solid #333; padding-top: 20px; display: none;">
         <h3>Seleccioná el método de entrega:</h3>
-        <label>
-            <input type="radio" name="tipoEnvio" value="retiro" checked onchange="toggleCamposEnvio()"> 
-            Retiro por el taller (Gratis - Campana)
-        </label>
-        <label>
-            <input type="radio" name="tipoEnvio" value="local" onchange="toggleCamposEnvio()"> 
-            Envío Local / GBA ($5.000)
-        </label>
-        <label>
-            <input type="radio" name="tipoEnvio" value="correo" onchange="toggleCamposEnvio()"> 
-            Correo Argentino - Todo el país ($12.000)
-        </label>
-    </div>
+        <div class="opciones-envio">
+            <label><input type="radio" name="tipoEnvio" value="retiro" checked onchange="toggleCamposEnvio()"> Retiro por el taller (Gratis)</label>
+            <label><input type="radio" name="tipoEnvio" value="local" onchange="toggleCamposEnvio()"> Envío Local / GBA ($5.000)</label>
+            <label><input type="radio" name="tipoEnvio" value="correo" onchange="toggleCamposEnvio()"> Correo Argentino ($12.000)</label>
+        </div>
 
-    <!-- Formulario de dirección (Oculto por defecto si es retiro) -->
-    <div id="seccion-direccion" style="display: none; margin-top: 20px; border-top: 1px solid #333; padding-top: 15px;">
-        <h3>Datos de Envío</h3>
-        <input type="text" id="envioNombre" placeholder="Nombre y Apellido" class="input-form">
-        <input type="text" id="envioTelefono" placeholder="Teléfono de contacto (Ej: 3489...)" class="input-form">
-        <input type="text" id="envioDireccion" placeholder="Calle, Número, Piso/Depto" class="input-form">
-        <input type="text" id="envioLocalidad" placeholder="Localidad / Partido / Provincia" class="input-form">
-        <input type="text" id="envioCP" placeholder="Código Postal" class="input-form">
-    </div>
+        <div id="seccion-direccion" style="display: none; margin-top: 15px;">
+            <input type="text" id="envioNombre" placeholder="Nombre y Apellido" class="input-form">
+            <input type="text" id="envioTelefono" placeholder="Teléfono" class="input-form">
+            <input type="text" id="envioDireccion" placeholder="Dirección" class="input-form">
+            <input type="text" id="envioLocalidad" placeholder="Localidad" class="input-form">
+            <input type="text" id="envioCP" placeholder="Código Postal" class="input-form">
+        </div>
 
-    <!-- Botón para procesar el pago -->
-    <button type="button" class="btn-pagar" onclick="procesarPagoCarrito()">Pagar con Mercado Pago</button>
+        <button class="btn-pagar" style="margin-top: 20px; background: #28a745;" onclick="procesarPagoCarrito()">Pagar Pedido Completo</button>
+    </div>
 </div>
 
 <script>
-    // Función para mostrar u ocultar el formulario según la opción elegida
-    function toggleCamposEnvio() {
-        const tipo = document.querySelector('input[name="tipoEnvio"]:checked').value;
-        const seccionDir = document.getElementById('seccion-direccion');
-        
-        if (tipo === 'retiro') {
-            seccionDir.style.display = 'none';
+    window.carritoQuoteIds = [];
+
+    // --- Lógica de Cotización ---
+    async function realizarCotizacion() {
+        const fileInput = document.getElementById('fileInput');
+        if (!fileInput.files[0]) return alert("Seleccioná un archivo");
+
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+        formData.append("material", document.getElementById('materialInput').value);
+        formData.append("espesor", document.getElementById('espesorInput').value);
+
+        const res = await fetch('/cotizar', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (res.ok) {
+            window.carritoQuoteIds.push(data.quote_id);
+            const tbody = document.querySelector("#tablaCarrito tbody");
+            tbody.innerHTML += `<tr><td>${data.archivo}</td><td>$${data.total_estimado}</td><td>Cotizado</td></tr>`;
+            document.getElementById('finalizar-pedido').style.display = 'block';
         } else {
-            seccionDir.style.display = 'block';
+            alert("Error: " + data.detail);
         }
     }
 
-    // Función que recopila los datos, valida (si es envío) y llama al backend
+    // --- Lógica de Envío ---
+    function toggleCamposEnvio() {
+        const tipo = document.querySelector('input[name="tipoEnvio"]:checked').value;
+        document.getElementById('seccion-direccion').style.display = (tipo === 'retiro') ? 'none' : 'block';
+    }
+
     async function procesarPagoCarrito() {
-        // Obtenemos los IDs de las cotizaciones actuales en tu carrito (ejemplo de array de IDs)
-        // Asegurate de reemplazar esto con tu lógica real donde guardás los quote_ids del carrito
-        const idsDeCotizaciones = window.carritoQuoteIds || []; 
-
-        if (idsDeCotizaciones.length === 0) {
-            alert("El carrito está vacío o no hay archivos cotizados.");
-            return;
-        }
-
         const tipoEnvio = document.querySelector('input[name="tipoEnvio"]:checked').value;
+        const formData = new FormData();
         
-        // Validar campos obligatorios si elige envío
-        let nombre = "", telefono = "", direccion = "", localidad = "", cp = "";
+        formData.append("item_ids", window.carritoQuoteIds.join(","));
+        formData.append("tipo_envio", tipoEnvio);
         
         if (tipoEnvio !== 'retiro') {
-            nombre = document.getElementById("envioNombre").value.trim();
-            telefono = document.getElementById("envioTelefono").value.trim();
-            direccion = document.getElementById("envioDireccion").value.trim();
-            localidad = document.getElementById("envioLocalidad").value.trim();
-            cp = document.getElementById("envioCP").value.trim();
-
-            if (!nombre || !telefono || !direccion || !localidad || !cp) {
-                alert("Por favor, completá todos los datos de envío antes de continuar.");
-                return;
-            }
+            formData.append("nombre_envio", document.getElementById("envioNombre").value);
+            formData.append("telefono_envio", document.getElementById("envioTelefono").value);
+            formData.append("direccion_envio", document.getElementById("envioDireccion").value);
+            formData.append("localidad_envio", document.getElementById("envioLocalidad").value);
+            formData.append("cp_envio", document.getElementById("envioCP").value);
         }
 
-        // Armamos el FormData para enviar a tu API en FastAPI
-        const formData = new FormData();
-        formData.append("item_ids", idsDeCotizaciones.join(","));
-        formData.append("tipo_envio", tipoEnvio);
-        formData.append("nombre_envio", nombre);
-        formData.append("telefono_envio", telefono);
-        formData.append("direccion_envio", direccion);
-        formData.append("localidad_envio", localidad);
-        formData.append("cp_envio", cp);
-
-        try {
-            const response = await fetch('/crear_pago_carrito', {
-                method: 'POST',
-                body: formData
-            });
-
-            const data = await response.json();
-
-            if (response.ok && data.init_point) {
-                // Redirige al checkout de Mercado Pago
-                window.location.href = data.init_point;
-            } else {
-                alert("Error al generar el pago: " + (data.detail || "Intente nuevamente."));
-            }
-        } catch (error) {
-            console.error("Error de conexión:", error);
-            alert("Ocurrió un error al conectar con el servidor de pagos.");
+        const res = await fetch('/crear_pago_carrito', { method: 'POST', body: formData });
+        const data = await res.json();
+        
+        if (res.ok) {
+            window.location.href = data.init_point;
+        } else {
+            alert("Error: " + data.detail);
         }
     }
 </script>
