@@ -414,3 +414,176 @@ async def webhook(request: Request):
                 print(f"Error procesando webhook de pago: {e}")
 
     return {"status": "ok"}
+    <!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ANDMAX Laser - Cotizador Online</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --accent: #e63946;
+            --text: #f1f1f1;
+            --text-muted: #a0a0a0;
+            --border: #333;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 500px;
+            width: 100%;
+            background: var(--card-bg);
+            padding: 24px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        }
+        h1 { font-size: 1.4rem; text-align: center; margin-bottom: 20px; color: var(--accent); }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; font-size: 0.9rem; margin-bottom: 6px; color: var(--text-muted); }
+        select, input[type="file"], input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: #2a2a2a;
+            color: var(--text);
+            box-sizing: border-box;
+        }
+        .checkbox-group { display: flex; align-items: center; gap: 8px; }
+        .checkbox-group input { width: auto; }
+        button {
+            width: 100%;
+            padding: 12px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover { opacity: 0.9; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        #result { margin-top: 20px; padding: 16px; background: #252525; border-radius: 8px; display: none; }
+        #preview { margin-top: 12px; background: #000; border-radius: 6px; padding: 10px; text-align: center; }
+        .price { font-size: 1.5rem; color: #4caf50; font-weight: bold; text-align: center; margin: 12px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ANDMAX LASER - Cotizador</h1>
+        <form id="quoteForm">
+            <div class="form-group">
+                <label for="file">Archivo DXF:</label>
+                <input type="file" id="file" name="file" accept=".dxf" required>
+            </div>
+            <div class="form-group">
+                <label for="material">Material:</label>
+                <select id="material" name="material">
+                    <option value="acero_inoxidable">Acero Inoxidable (316/L, 304)</option>
+                    <option value="acero_carbono">Acero al Carbono / Hierro</option>
+                    <option value="aluminio">Aluminio</option>
+                    <option value="mdf">MDF</option>
+                    <option value="acrilico">Acrílico</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="espesor">Espesor (mm):</label>
+                <select id="espesor" name="espesor">
+                    <option value="1">1.0 mm</option>
+                    <option value="2">2.0 mm</option>
+                    <option value="3" selected>3.0 mm</option>
+                    <option value="4">4.0 mm</option>
+                    <option value="5">5.0 mm</option>
+                    <option value="6">6.0 mm</option>
+                    <option value="8">8.0 mm</option>
+                    <option value="10">10.0 mm</option>
+                </select>
+            </div>
+            <div class="form-group checkbox-group">
+                <input type="checkbox" id="incluye_material" name="incluye_material" checked>
+                <label for="incluye_material" style="margin:0;">Incluir provisión de material</label>
+            </div>
+            <button type="submit" id="btnCotizar">Calcular Cotización</button>
+        </form>
+
+        <div id="result">
+            <div id="preview"></div>
+            <p><strong>Metros de corte:</strong> <span id="resMetros"></span> m</p>
+            <p><strong>Perforaciones:</strong> <span id="resPiercings"></span></p>
+            <div class="price">$<span id="resTotal"></span> ARS</div>
+            <button id="btnPagar" style="background:#009ee3;">Pagar con Mercado Pago</button>
+        </div>
+    </div>
+
+    <script>
+        let currentQuoteId = null;
+
+        document.getElementById('quoteForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('btnCotizar');
+            btn.disabled = true;
+            btn.innerText = 'Procesando DXF...';
+
+            const formData = new FormData();
+            formData.append('file', document.getElementById('file').files[0]);
+            formData.append('material', document.getElementById('material').value);
+            formData.append('espesor', document.getElementById('espesor').value);
+            formData.append('incluye_material', document.getElementById('incluye_material').checked);
+
+            try {
+                const res = await fetch('/cotizar', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (!res.ok) throw new Error(data.detail || 'Error en el servidor');
+
+                currentQuoteId = data.quote_id;
+                document.getElementById('resMetros').innerText = data.metros_corte;
+                document.getElementById('resPiercings').innerText = data.piercings;
+                document.getElementById('resTotal').innerText = data.total_estimado.toLocaleString('es-AR');
+                document.getElementById('preview').innerHTML = data.svg_preview;
+                document.getElementById('result').style.display = 'block';
+            } catch (err) {
+                alert('Error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Calcular Cotización';
+            }
+        });
+
+        document.getElementById('btnPagar').addEventListener('click', async () => {
+            if (!currentQuoteId) return;
+            const btn = document.getElementById('btnPagar');
+            btn.disabled = true;
+            btn.innerText = 'Generando link de pago...';
+
+            const formData = new FormData();
+            formData.append('quote_id', currentQuoteId);
+
+            try {
+                const res = await fetch('/crear_pago', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (!res.ok) throw new Error(data.detail || 'Error al generar el pago');
+
+                window.location.href = data.init_point;
+            } catch (err) {
+                alert('Error: ' + err.message);
+                btn.disabled = false;
+                btn.innerText = 'Pagar con Mercado Pago';
+            }
+        });
+    </script>
+</body>
+</html>
