@@ -300,67 +300,165 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     all_points_x = []
     all_points_y = []
     
-    paths_list = []
+    piezas_detectadas = 0
+    perforaciones_detectadas = 0
 
-    def extraer_paths_recursivo(entidades):
+    ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
+
+    def procesar_entidades(entidades):
+        nonlocal total_length_mm, piezas_detectadas, perforaciones_detectadas
         for entity in entidades:
             dxftype = entity.dxftype()
+            
             if dxftype == 'INSERT':
                 try:
                     if hasattr(entity, 'virtual_entities'):
-                        extraer_paths_recursivo(entity.virtual_entities())
+                        procesar_entidades(entity.virtual_entities())
                 except Exception:
                     pass
                 continue
 
+            if dxftype not in ENTIDADES_CORTE:
+                continue
+
+            geometria_procesada = False
+
+            # Intento 1: Usar path de ezdxf
             try:
                 p = path.make_path(entity)
                 if p:
-                    if p.has_sub_paths:
-                        for sub in p.sub_paths():
-                            paths_list.append(sub)
+                    length = path.length(p)
+                    if length > 0:
+                        total_length_mm += length
+                    
+                    for pt in p.control_points():
+                        all_points_x.append(float(pt[0]))
+                        all_points_y.append(float(pt[1]))
+
+                    is_closed = False
+                    try:
+                        is_closed = p.is_closed()
+                    except Exception:
+                        pts = list(p.control_points())
+                        if len(pts) > 2:
+                            ini, fin = pts[0], pts[-1]
+                            if math.isclose(float(ini[0]), float(fin[0]), abs_tol=1e-2) and math.isclose(float(ini[1]), float(fin[1]), abs_tol=1e-2):
+                                is_closed = True
+
+                    if is_closed or dxfx_es_cerrada(entity):
+                        piezas_detectadas += 1
+                        perforaciones_detectadas += 1
                     else:
-                        paths_list.append(p)
+                        perforaciones_detectadas += 1
+
+                    geometria_procesada = True
             except Exception:
                 pass
 
-    extraer_paths_recursivo(msp)
-    for block in doc.blocks:
-        if not block.name.startswith('*'):
-            extraer_paths_recursivo(block)
+            # Intento 2: Fallback directo por tipo de entidad si path falló
+            if not geometria_procesada:
+                try:
+                    if dxftype == 'LINE':
+                        s, e = entity.dxf.start, entity.dxf.end
+                        total_length_mm += s.distance(e)
+                        all_points_x.extend([float(s.x), float(e.x)])
+                        all_points_y.extend([float(s.y), float(e.y)])
+                        perforaciones_detectadas += 1
 
-    piezas_detectadas = 0
-    perforaciones_detectadas = 0
+                    elif dxftype == 'CIRCLE':
+                        c, r = entity.dxf.center, entity.dxf.radius
+                        total_length_mm += 2 * math.pi * r
+                        all_points_x.extend([float(c.x - r), float(c.x + r)])
+                        all_points_y.extend([float(c.y - r), float(c.y + r)])
+                        piezas_detectadas += 1
+                        perforaciones_detectadas += 1
 
-    for p in paths_list:
+                    elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
+                        puntos = list(entity.get_points(format='xy'))
+                        if puntos:
+                            for idx, pt in enumerate(puntos):
+                                px, py = float(pt[0]), float(pt[1])
+                                all_points_x.append(px)
+                                all_points_y.append(py)
+                                if idx > 0:
+                                    prev_pt = puntos[idx - 1]
+                                    total_length_mm += math.hypot(px - float(prev_pt[0]), py - float(prev_pt[1]))
+                            
+                            if getattr(entity, 'closed', False) or dxfx_es_cerrada(entity):
+                                piezas_detectadas += 1
+                                perforaciones_detectadas += 1
+                            else:
+                                perforaciones_detectadas += 1
+
+                    elif dxftype == 'ARC':
+                        c, r = entity.dxf.center, entity.dxf.radius
+                        start_angle = math.radians(entity.dxf.start_angle)
+                        end_angle = math.radians(entity.dxf.end_angle)
+                        sweep = end_angle - start_angle
+                        if sweep < 0:
+                            sweep += 2 * math.pi
+                        total_length_mm += r * sweep
+                        all_points_x.extend([float(c.x - r), float(c.x + r)])
+                        all_points_y.extend([float(c.y - r), float(c.y + r)])
+                        perforaciones_detectadas += 1
+                except Exception:
+                    pass
+
+    def dxfx_es_cerrada(entity) -> bool:
         try:
-            length = path.length(p)
-            if length > 0:
-                total_length_mm += length
-            
-            for pt in p.control_points():
-                all_points_x.append(float(pt[0]))
-                all_points_y.append(float(pt[1]))
-
-            is_closed = False
-            try:
-                is_closed = p.is_closed()
-            except Exception:
-                pts = list(p.control_points())
-                if len(pts) > 2:
-                    ini, fin = pts[0], pts[-1]
-                    if math.isclose(float(ini[0]), float(fin[0]), abs_tol=1e-2) and math.isclose(float(ini[1]), float(fin[1]), abs_tol=1e-2):
-                        is_closed = True
-
-            if is_closed:
-                piezas_detectadas += 1
-                perforaciones_detectadas += 1
+            if getattr(entity, 'closed', False):
+                return True
+            puntos = list(entity.get_points(format='xy'))
+            if len(puntos) > 2:
+                ini, fin = puntos[0], puntos[-1]
+                return math.isclose(float(ini[0]), float(fin[0]), abs_tol=1e-2) and math.isclose(float(ini[1]), float(fin[1]), abs_tol=1e-2)
         except Exception:
             pass
+        return False
+
+    procesar_entidades(msp)
+    for block in doc.blocks:
+        if not block.name.startswith('*'):
+            procesar_entidades(block)
 
     piezas_detectadas = max(1, piezas_detectadas)
     perforaciones_detectadas = max(1, perforaciones_detectadas)
 
+    # 1. CÁLCULO DE DIMENSIONES REALES (Ancho x Alto en mm)
+    if all_points_x and all_points_y:
+        ancho_pieza = round(max(all_points_x) - min(all_points_x), 2)
+        alto_pieza = round(max(all_points_y) - min(all_points_y), 2)
+    else:
+        ancho_pieza, alto_pieza = 0.0, 0.0
+
+    metros_corte = round(total_length_mm / 1000.0, 2)
+    precio_metro, costo_mat_unitario = obtener_precio_metro_y_material(material, espesor)
+
+    PRECIO_PIERCING = 50.0
+    COSTO_SETUP = 1500.0
+
+    costo_mecanizado = round((metros_corte * precio_metro) + (perforaciones_detectadas * PRECIO_PIERCING), 2)
+    costo_material = round(metros_corte * costo_mat_unitario, 2) if incluye_material else 0.0
+    total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
+
+    if math.isnan(total_estimado) or math.isinf(total_estimado) or total_estimado <= 0:
+        raise ValueError("El cálculo de la cotización generó un valor inválido.")
+
+    svg_preview = generar_svg_preview(doc, msp)
+
+    return {
+        "metros_corte": metros_corte,
+        "piercings": perforaciones_detectadas,
+        "ancho_mm": ancho_pieza,
+        "alto_mm": alto_pieza,
+        "piezas_detectadas": piezas_detectadas,
+        "precio_metro_aplicado": precio_metro,
+        "costo_mecanizado": costo_mecanizado,
+        "costo_material": costo_material,
+        "costo_setup": COSTO_SETUP,
+        "total_estimado": total_estimado,
+        "svg_preview": svg_preview,
+    }
     # 1. CÁLCULO DE DIMENSIONES REALES (Ancho x Alto en mm)
     if all_points_x and all_points_y:
         ancho_pieza = round(max(all_points_x) - min(all_points_x), 2)
