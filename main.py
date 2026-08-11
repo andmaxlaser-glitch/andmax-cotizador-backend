@@ -1,7 +1,11 @@
 import os
+import re
+import time
+import uuid
 import shutil
 import smtplib
 import math
+from threading import Lock
 from email.message import EmailMessage
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,10 +15,19 @@ from ezdxf import path, bbox
 
 app = FastAPI()
 
+# --------------------------------------------------------------------------
+# CORS
+# --------------------------------------------------------------------------
+# OJO: "*" + allow_credentials=True es una combinación inválida (los
+# navegadores la ignoran/rechazan). Si necesitás credenciales, listá los
+# orígenes explícitamente. Si no las necesitás (que es lo normal acá,
+# porque no usás cookies de sesión), dejá allow_credentials=False.
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -28,6 +41,46 @@ EMAIL_DESTINO = os.getenv("EMAIL_DESTINO", SMTP_EMAIL)
 
 TEMP_DIR = "/tmp/dxf_storage"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
+ALLOWED_EXTENSIONS = {".dxf"}
+
+# --------------------------------------------------------------------------
+# Almacén de cotizaciones en memoria.
+# Guardamos acá el precio calculado por el SERVIDOR para que /crear_pago
+# nunca tenga que confiar en un monto que mande el cliente.
+#
+# NOTA: esto vive en memoria del proceso. Si el servicio corre con más de
+# un worker/instancia (ej. varios dynos en Render), una cotización creada
+# en un proceso puede no verse en otro. Para producción con más de una
+# instancia conviene mover esto a Redis o a una tabla en base de datos.
+# --------------------------------------------------------------------------
+QUOTES: dict[str, dict] = {}
+QUOTES_LOCK = Lock()
+QUOTE_TTL_SECONDS = 60 * 60 * 2  # 2 horas
+
+
+def _limpiar_cotizaciones_viejas():
+    ahora = time.time()
+    with QUOTES_LOCK:
+        vencidas = [qid for qid, q in QUOTES.items() if ahora - q["created_at"] > QUOTE_TTL_SECONDS]
+        for qid in vencidas:
+            filepath = QUOTES[qid].get("filepath")
+            if filepath and os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                except OSError:
+                    pass
+            QUOTES.pop(qid, None)
+
+
+def nombre_archivo_seguro(filename: str) -> str:
+    """Evita path traversal y colisiones entre clientes distintos."""
+    base = os.path.basename(filename or "archivo.dxf")
+    base = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
+    if not base.lower().endswith(".dxf"):
+        base += ".dxf"
+    return f"{uuid.uuid4().hex}_{base}"
 
 
 def generar_svg_preview(msp) -> str:
@@ -55,7 +108,7 @@ def generar_svg_preview(msp) -> str:
 
         paths_svg = []
         ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
-        
+
         stroke_width = max(width, height) / 250.0
 
         for entity in msp:
@@ -149,6 +202,54 @@ def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
     return tarifas_mat[espesores[-1]]
 
 
+def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_material: bool) -> dict:
+    """Toda la lógica de precio vive acá para que /cotizar y la verificación
+    en /crear_pago usen exactamente el mismo cálculo."""
+    doc = ezdxf.readfile(filepath)
+    msp = doc.modelspace()
+
+    total_length_mm = 0.0
+    piercings = 0
+    ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
+
+    for entity in msp:
+        dxftype = entity.dxftype()
+        if dxftype not in ENTIDADES_CORTE:
+            continue
+        piercings += 1
+        try:
+            p = path.make_path(entity)
+            total_length_mm += path.length(p)
+        except Exception:
+            if dxftype == 'LINE':
+                total_length_mm += entity.dxf.start.distance(entity.dxf.end)
+            elif dxftype == 'CIRCLE':
+                total_length_mm += 2 * math.pi * entity.dxf.radius
+
+    metros_corte = round(total_length_mm / 1000.0, 2)
+    precio_metro = obtener_precio_metro(material, espesor)
+
+    PRECIO_PIERCING = 50.0
+    COSTO_SETUP = 1500.0
+
+    costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
+    costo_material = round(metros_corte * 800.0, 2) if incluye_material else 0.0
+    total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
+
+    svg_preview = generar_svg_preview(msp)
+
+    return {
+        "metros_corte": metros_corte,
+        "piercings": piercings,
+        "precio_metro_aplicado": precio_metro,
+        "costo_mecanizado": costo_mecanizado,
+        "costo_material": costo_material,
+        "costo_setup": COSTO_SETUP,
+        "total_estimado": total_estimado,
+        "svg_preview": svg_preview,
+    }
+
+
 @app.get("/")
 def read_root():
     return {"status": "Cotizador API ANDMAX Laser activo"}
@@ -161,75 +262,78 @@ async def cotizar(
     espesor: str = Form("3"),
     incluye_material: bool = Form(True)
 ):
-    temp_filepath = os.path.join(TEMP_DIR, file.filename)
+    _limpiar_cotizaciones_viejas()
+
+    original_filename = file.filename or "archivo.dxf"
+    if not original_filename.lower().endswith(".dxf"):
+        raise HTTPException(status_code=400, detail="Solo se aceptan archivos .dxf")
+
+    safe_name = nombre_archivo_seguro(original_filename)
+    temp_filepath = os.path.join(TEMP_DIR, safe_name)
+
+    size = 0
     with open(temp_filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_FILE_SIZE_BYTES:
+                buffer.close()
+                os.remove(temp_filepath)
+                raise HTTPException(status_code=413, detail="Archivo demasiado grande (máx. 15MB)")
+            buffer.write(chunk)
 
     try:
-        doc = ezdxf.readfile(temp_filepath)
-        msp = doc.modelspace()
+        resultado = calcular_cotizacion(temp_filepath, material, espesor, incluye_material)
+    except HTTPException:
+        raise
+    except Exception:
+        # No exponemos el detalle interno de ezdxf al cliente.
+        if os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
+        raise HTTPException(status_code=400, detail="No se pudo procesar el archivo DXF. Verificá que sea un DXF válido.")
 
-        total_length_mm = 0.0
-        piercings = 0
-        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
-
-        for entity in msp:
-            dxftype = entity.dxftype()
-            if dxftype not in ENTIDADES_CORTE: continue
-            piercings += 1
-            try:
-                p = path.make_path(entity)
-                total_length_mm += path.length(p)
-            except Exception:
-                if dxftype == 'LINE': total_length_mm += entity.dxf.start.distance(entity.dxf.end)
-                elif dxftype == 'CIRCLE': total_length_mm += 2 * math.pi * entity.dxf.radius
-
-        metros_corte = round(total_length_mm / 1000.0, 2)
-        precio_metro = obtener_precio_metro(material, espesor)
-
-        PRECIO_PIERCING = 50.0
-        COSTO_SETUP = 1500.0
-
-        costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
-        costo_material = round(metros_corte * 800.0, 2) if incluye_material else 0.0
-        total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
-
-        # Generar vista previa en formato SVG
-        svg_preview = generar_svg_preview(msp)
-
-        return {
-            "archivo": file.filename,
+    quote_id = uuid.uuid4().hex
+    with QUOTES_LOCK:
+        QUOTES[quote_id] = {
+            "created_at": time.time(),
             "filepath": temp_filepath,
-            "metros_corte": metros_corte,
-            "piercings": piercings,
-            "precio_metro_aplicado": precio_metro,
-            "costo_mecanizado": costo_mecanizado,
-            "costo_material": costo_material,
-            "costo_setup": COSTO_SETUP,
-            "total_estimado": total_estimado,
+            "original_filename": original_filename,
             "material": material,
             "espesor": espesor,
-            "svg_preview": svg_preview
+            "incluye_material": incluye_material,
+            "total_estimado": resultado["total_estimado"],
+            "metros_corte": resultado["metros_corte"],
+            "piercings": resultado["piercings"],
+            "used": False,
         }
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error procesando el archivo DXF: {str(e)}")
+    return {
+        "quote_id": quote_id,
+        "archivo": original_filename,
+        **resultado,
+        "material": material,
+        "espesor": espesor,
+    }
 
 
 @app.post("/crear_pago")
-async def crear_pago(
-    titulo: str = Form(...),
-    monto: float = Form(...),
-    material: str = Form("mdf"),
-    espesor: str = Form("3"),
-    metros: str = Form("0"),
-    piercings: str = Form("0"),
-    filepath: str = Form("")
-):
+async def crear_pago(quote_id: str = Form(...)):
     if not sdk:
         raise HTTPException(status_code=500, detail="Mercado Pago SDK no inicializado")
 
-    external_data = f"{titulo}|{material}|{espesor}|{metros}|{piercings}"
+    with QUOTES_LOCK:
+        quote = QUOTES.get(quote_id)
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada o vencida. Volvé a subir el archivo.")
+    if quote["used"]:
+        raise HTTPException(status_code=409, detail="Esta cotización ya generó un pago.")
+
+    # El precio SIEMPRE sale de lo que calculó el servidor en /cotizar,
+    # nunca de lo que mande el cliente.
+    monto = quote["total_estimado"]
+    titulo = quote["original_filename"]
+
+    external_data = f"{quote_id}"
 
     preference_data = {
         "items": [
@@ -246,9 +350,12 @@ async def crear_pago(
 
     preference_client = mercadopago.Preference(sdk)
     preference_response = preference_client.create(preference_data)
-    
+
     if preference_response.get("status") not in [200, 201]:
         raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago")
+
+    with QUOTES_LOCK:
+        QUOTES[quote_id]["used"] = True
 
     preference = preference_response["response"]
     return {"init_point": preference["init_point"]}
@@ -258,35 +365,32 @@ async def crear_pago(
 async def webhook(request: Request):
     query_params = request.query_params
     topic = query_params.get("topic") or query_params.get("type")
-    
+
     if topic == "payment":
         payment_id = query_params.get("id") or query_params.get("data.id")
         if payment_id and sdk:
             payment_client = mercadopago.Payment(sdk)
             payment_info = payment_client.get(payment_id)["response"]
-            
+
             if payment_info.get("status") == "approved":
-                ext_ref = payment_info.get("external_reference", "")
-                parts = ext_ref.split("|")
-                
-                archivo_nombre = parts[0] if len(parts) > 0 else "desconocido.dxf"
-                material = parts[1] if len(parts) > 1 else "N/A"
-                espesor = parts[2] if len(parts) > 2 else "N/A"
-                metros = parts[3] if len(parts) > 3 else "0"
-                piercings = parts[4] if len(parts) > 4 else "0"
-                
-                monto = payment_info.get("transaction_amount", "0")
-                email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
-                filepath = os.path.join(TEMP_DIR, archivo_nombre)
-                
-                enviar_email_notificacion(
-                    email_cliente=email_cliente,
-                    filepath=filepath,
-                    material=material,
-                    espesor=espesor,
-                    metros=metros,
-                    piercings=piercings,
-                    monto=str(monto)
-                )
+                quote_id = payment_info.get("external_reference", "")
+                with QUOTES_LOCK:
+                    quote = QUOTES.get(quote_id)
+
+                if quote:
+                    monto = payment_info.get("transaction_amount", quote["total_estimado"])
+                    email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
+
+                    enviar_email_notificacion(
+                        email_cliente=email_cliente,
+                        filepath=quote["filepath"],
+                        material=quote["material"],
+                        espesor=quote["espesor"],
+                        metros=str(quote["metros_corte"]),
+                        piercings=str(quote["piercings"]),
+                        monto=str(monto)
+                    )
+                else:
+                    print(f"Webhook: no se encontró cotización para external_reference={quote_id}")
 
     return {"status": "ok"}
