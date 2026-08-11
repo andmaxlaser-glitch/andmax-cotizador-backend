@@ -102,33 +102,61 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG calculando el encuadre real punto por punto a partir de los paths convertidos."""
+    """Genera un SVG explotando bloques y capturando todas las geometrías de corte."""
     try:
-        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
         paths_data = []
         all_points_x = []
         all_points_y = []
 
-        # Convertimos las entidades a caminos (paths) de ezdxf
-        for entity in msp:
-            if entity.dxftype() not in ENTIDADES_CORTE:
-                continue
-            try:
-                p = path.make_path(entity)
-                d_str = path.to_svg_path_data([p])
-                if d_str and d_str.strip():
-                    paths_data.append(d_str)
-                    # Extraer puntos del path para calcular la caja de forma manual y exacta
-                    for control_point in p:
-                        all_points_x.append(control_point.x)
-                        all_points_y.append(control_point.y)
-            except Exception:
-                continue
+        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
+
+        # Función auxiliar para procesar entidades (incluyendo bloques insertados)
+        def procesar_entidades(entidades):
+            for entity in entidades:
+                dxftype = entity.dxftype()
+                
+                # Si es un bloque, explotamos sus entidades internas
+                if dxftype == 'INSERT':
+                    try:
+                        sub_ents = entity.virtual_entities()
+                        procesar_entidades(sub_ents)
+                    except Exception:
+                        pass
+                    continue
+
+                if dxftype not in ENTIDADES_CORTE:
+                    continue
+
+                try:
+                    p = path.make_path(entity)
+                    d_str = path.to_svg_path_data([p])
+                    if d_str and d_str.strip():
+                        paths_data.append(d_str)
+                        for pt in p:
+                            all_points_x.append(pt.x)
+                            all_points_y.append(pt.y)
+                except Exception:
+                    # Respaldo geométrico manual para líneas y círculos si path falla
+                    try:
+                        if dxftype == 'LINE':
+                            s, e = entity.dxf.start, entity.dxf.end
+                            all_points_x.extend([s.x, e.x])
+                            all_points_y.extend([s.y, e.y])
+                            paths_data.append(f"M {s.x:.2f} {s.y:.2f} L {e.x:.2f} {e.y:.2f}")
+                        elif dxftype == 'CIRCLE':
+                            c, r = entity.dxf.center, entity.dxf.radius
+                            all_points_x.extend([c.x - r, c.x + r])
+                            all_points_y.extend([c.y - r, c.y + r])
+                            paths_data.append(f"M {c.x - r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x + r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x - r:.2f} {c.y:.2f}")
+                    except Exception:
+                        continue
+
+        # Ejecutamos el procesamiento sobre el Modelspace principal
+        procesar_entidades(msp)
 
         if not paths_data or not all_points_x or not all_points_y:
             return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles para vista previa</p>"
 
-        # Puntos mínimos y máximos reales extraídos directo de los trazos renderizados
         min_x, max_x = min(all_points_x), max(all_points_x)
         min_y, max_y = min(all_points_y), max(all_points_y)
 
@@ -138,11 +166,7 @@ def generar_svg_preview(doc, msp) -> str:
         if width <= 0 or height <= 0:
             return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas para renderizado</p>"
 
-        # Margen de seguridad del 8% alrededor de la figura exacta
-        margin_x = width * 0.08
-        margin_y = height * 0.08
-        margin = max(margin_x, margin_y, 1.0)
-
+        margin = max(width, height) * 0.08
         vb_x = min_x - margin
         vb_y = min_y - margin
         vb_w = width + (margin * 2)
@@ -155,7 +179,6 @@ def generar_svg_preview(doc, msp) -> str:
             for d in paths_data
         ]
 
-        # En SVG invertimos la Y tomando el origen Y del viewBox en min_y + max_y
         center_y = min_y + max_y
 
         return f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
