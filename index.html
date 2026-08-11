@@ -14,11 +14,12 @@
         button { background: #009ee3; color: white; border: none; padding: 12px 20px; border-radius: 4px; cursor: pointer; width: 100%; font-weight: bold; }
         button:hover { background: #0082be; }
         
-        /* Estilos de tabla y envíos */
         table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #252525; }
         th, td { padding: 12px; border: 1px solid #444; text-align: left; }
         .opciones-envio label { display: block; margin: 10px 0; cursor: pointer; }
         .input-form { width: 100%; padding: 10px; margin: 6px 0 12px 0; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px; }
+        /* Estilo para el SVG */
+        .preview-svg { width: 120px; height: 120px; background: #000; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -26,7 +27,6 @@
 <div class="container">
     <h2>ANDMAX Laser - Cotizador</h2>
     
-    <!-- FORMULARIO DE COTIZACIÓN -->
     <div id="cotizador">
         <div class="form-group">
             <label>Subir archivo DXF:</label>
@@ -49,24 +49,20 @@
         <button onclick="realizarCotizacion()">Cotizar Archivo</button>
     </div>
 
-    <!-- TABLA DE RESULTADOS -->
     <div id="resultados" style="margin-top: 30px;">
         <h3>Carrito de Cortes</h3>
         <table id="tablaCarrito">
             <thead>
                 <tr>
+                    <th>Vista</th>
                     <th>Archivo</th>
                     <th>Costo</th>
-                    <th>Estado</th>
                 </tr>
             </thead>
-            <tbody>
-                <!-- Los resultados se agregarán aquí -->
-            </tbody>
+            <tbody></tbody>
         </table>
     </div>
 
-    <!-- SECCIÓN DE ENVÍOS (Nueva funcionalidad) -->
     <div id="finalizar-pedido" style="margin-top: 40px; border-top: 2px solid #333; padding-top: 20px; display: none;">
         <h3>Seleccioná el método de entrega:</h3>
         <div class="opciones-envio">
@@ -90,7 +86,6 @@
 <script>
     window.carritoQuoteIds = [];
 
-    // --- Lógica de Cotización ---
     async function realizarCotizacion() {
         const fileInput = document.getElementById('fileInput');
         if (!fileInput.files[0]) return alert("Seleccioná un archivo");
@@ -106,14 +101,22 @@
         if (res.ok) {
             window.carritoQuoteIds.push(data.quote_id);
             const tbody = document.querySelector("#tablaCarrito tbody");
-            tbody.innerHTML += `<tr><td>${data.archivo}</td><td>$${data.total_estimado}</td><td>Cotizado</td></tr>`;
+            
+            // Creamos una nueva fila
+            const row = document.createElement("tr");
+            row.innerHTML = `
+                <td><div class="preview-svg">${data.svg_preview || 'No disponible'}</div></td>
+                <td>${data.archivo}</td>
+                <td>$${data.total_estimado}</td>
+            `;
+            tbody.appendChild(row);
+            
             document.getElementById('finalizar-pedido').style.display = 'block';
         } else {
             alert("Error: " + data.detail);
         }
     }
 
-    // --- Lógica de Envío ---
     function toggleCamposEnvio() {
         const tipo = document.querySelector('input[name="tipoEnvio"]:checked').value;
         document.getElementById('seccion-direccion').style.display = (tipo === 'retiro') ? 'none' : 'block';
