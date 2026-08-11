@@ -23,7 +23,6 @@ app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # Directorio actual de main.py
 PROJECT_ROOT = os.path.dirname(BASE_DIR)              # Un nivel arriba
 
-# Probar distintas combinaciones de ubicación para la carpeta frontend
 RUTAS_FRONTEND_POSIBLES = [
     os.path.join(PROJECT_ROOT, "frontend"),          # /src/frontend
     os.path.join(BASE_DIR, "frontend"),              # /src/backend/frontend
@@ -37,7 +36,6 @@ for ruta in RUTAS_FRONTEND_POSIBLES:
         FRONTEND_DIR = ruta
         break
 
-# Configuración de archivos estáticos (/static)
 static_dir = None
 if FRONTEND_DIR and os.path.exists(os.path.join(FRONTEND_DIR, "static")):
     static_dir = os.path.join(FRONTEND_DIR, "static")
@@ -104,9 +102,9 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(msp) -> str:
-    """Genera un string SVG vectorial robusto a partir del ModelSpace del DXF."""
+    """Genera un SVG vectorial extrayendo entidades directas, bloques e ítems descompuestos."""
     try:
-        # 1. Calcular el bounding box
+        # 1. Bounding box general
         extents = bbox.extents(msp)
         if not extents.has_data:
             return "<p style='color:#a0a0a0; font-size:12px;'>DXF sin vectores visibles</p>"
@@ -120,28 +118,45 @@ def generar_svg_preview(msp) -> str:
         if width <= 0 or height <= 0:
             return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones de plano inválidas</p>"
 
-        # Margen de seguridad del 5%
         margin = max(width, height) * 0.05
         vb_x = min_x - margin
         vb_y = min_y - margin
         vb_w = width + (margin * 2)
         vb_h = height + (margin * 2)
 
-        # Grosor de línea proporcional al tamaño de la pieza
         stroke_width = max(width, height) / 300.0
-
         paths_svg = []
-        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
 
-        for entity in msp:
-            if entity.dxftype() in ENTIDADES_CORTE:
+        # Recorrer entidades desarmando bloques
+        entities_to_process = list(msp.virtual_entities())
+        if not entities_to_process:
+            entities_to_process = list(msp)
+
+        for entity in entities_to_process:
+            dxftype = entity.dxftype()
+            try:
+                # Intento 1: Conversión directa a SVG Path data
+                p = path.make_path(entity)
+                d_str = path.to_svg_path_data([p])
+                if d_str and d_str.strip():
+                    paths_svg.append(
+                        f'<path d="{d_str}" fill="none" stroke="#e63946" '
+                        f'stroke-width="{stroke_width:.2f}" stroke-linecap="round" stroke-linejoin="round" />'
+                    )
+            except Exception:
+                # Intento 2: Fallback manual para tipos de entidades básicos
                 try:
-                    p = path.make_path(entity)
-                    d_str = path.to_svg_path_data([p])
-                    if d_str.strip():
+                    if dxftype == 'LINE':
+                        s, e = entity.dxf.start, entity.dxf.end
                         paths_svg.append(
-                            f'<path d="{d_str}" fill="none" stroke="#e63946" '
-                            f'stroke-width="{stroke_width:.2f}" stroke-linecap="round" stroke-linejoin="round" />'
+                            f'<line x1="{s.x:.2f}" y1="{s.y:.2f}" x2="{e.x:.2f}" y2="{e.y:.2f}" '
+                            f'stroke="#e63946" stroke-width="{stroke_width:.2f}" stroke-linecap="round" />'
+                        )
+                    elif dxftype == 'CIRCLE':
+                        c, r = entity.dxf.center, entity.dxf.radius
+                        paths_svg.append(
+                            f'<circle cx="{c.x:.2f}" cy="{c.y:.2f}" r="{r:.2f}" '
+                            f'fill="none" stroke="#e63946" stroke-width="{stroke_width:.2f}" />'
                         )
                 except Exception:
                     continue
@@ -149,16 +164,16 @@ def generar_svg_preview(msp) -> str:
         if not paths_svg:
             return "<p style='color:#a0a0a0; font-size:12px;'>No se detectaron entidades de corte compatibles</p>"
 
-        # SVG con preservación de aspect ratio e inversión correcta del eje Y de CAD
+        # Retornar SVG armado
         svg_code = f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
             xmlns="http://www.w3.org/2000/svg" 
             style="width: 100%; height: 100%; max-height: 250px; background-color: #1a1a1a; border-radius: 8px; display: block;"
             preserveAspectRatio="xMidYMid meet">
-            <g transform="translate(0, {min_y + max_y}) scale(1, -1)">
+            <g transform="translate(0, {min_y + max_y:.2f}) scale(1, -1)">
                 {''.join(paths_svg)}
             </g>
         </svg>'''
-        
+
         return svg_code
 
     except Exception as e:
@@ -215,11 +230,11 @@ def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> 
     }
 
     COSTOS_MATERIAL_BASE = {
-        "mdf": 5000.0,
-        "acrilico": 8000.0,
-        "acero_carbono": 120000.0,
-        "acero_inoxidable": 150000.0,
-        "aluminio": 130000.0,
+        "mdf": 800.0,
+        "acrilico": 1200.0,
+        "acero_carbono": 3500.0,
+        "acero_inoxidable": 6500.0,
+        "aluminio": 4500.0
     }
 
     mat_str = str(material_input).lower().strip()
@@ -260,7 +275,12 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     piercings = 0
     ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
 
-    for entity in msp:
+    # Iterar entidades para calcular longitud
+    entities_to_calc = list(msp.virtual_entities())
+    if not entities_to_calc:
+        entities_to_calc = list(msp)
+
+    for entity in entities_to_calc:
         dxftype = entity.dxftype()
         if dxftype not in ENTIDADES_CORTE:
             continue
@@ -287,77 +307,19 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     if math.isnan(total_estimado) or math.isinf(total_estimado) or total_estimado <= 0:
         raise ValueError("El cálculo de la cotización generó un valor inválido.")
 
-def generar_svg_preview(msp) -> str:
-    """Genera un SVG vectorial extrayendo entidades directas y bloques desarmados."""
-    try:
-        # 1. Bounding box general
-        extents = bbox.extents(msp)
-        if not extents.has_data:
-            return "<p style='color:#a0a0a0; font-size:12px;'>DXF sin vectores visibles</p>"
+    svg_preview = generar_svg_preview(msp)
 
-        min_x, min_y = extents.extmin.x, extents.extmin.y
-        max_x, max_y = extents.extmax.x, extents.extmax.y
+    return {
+        "metros_corte": metros_corte,
+        "piercings": piercings,
+        "precio_metro_aplicado": precio_metro,
+        "costo_mecanizado": costo_mecanizado,
+        "costo_material": costo_material,
+        "costo_setup": COSTO_SETUP,
+        "total_estimado": total_estimado,
+        "svg_preview": svg_preview,
+    }
 
-        width = max_x - min_x
-        height = max_y - min_y
-
-        if width <= 0 or height <= 0:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones de plano inválidas</p>"
-
-        margin = max(width, height) * 0.05
-        vb_x = min_x - margin
-        vb_y = min_y - margin
-        vb_w = width + (margin * 2)
-        vb_h = height + (margin * 2)
-
-        stroke_width = max(width, height) / 300.0
-        paths_svg = []
-
-        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
-
-        # 2. Recorrer entidades desarmando bloques (virtual_entities)
-        for entity in msp.virtual_entities():
-            dxftype = entity.dxftype()
-            if dxftype in ENTIDADES_CORTE:
-                try:
-                    p = path.make_path(entity)
-                    d_str = path.to_svg_path_data([p])
-                    if d_str and d_str.strip():
-                        paths_svg.append(
-                            f'<path d="{d_str}" fill="none" stroke="#e63946" '
-                            f'stroke-width="{stroke_width:.2f}" stroke-linecap="round" stroke-linejoin="round" />'
-                        )
-                except Exception:
-                    # Alternativa manual para líneas simples si falla make_path
-                    if dxftype == 'LINE':
-                        try:
-                            start = entity.dxf.start
-                            end = entity.dxf.end
-                            paths_svg.append(
-                                f'<line x1="{start.x:.2f}" y1="{start.y:.2f}" x2="{end.x:.2f}" y2="{end.y:.2f}" '
-                                f'stroke="#e63946" stroke-width="{stroke_width:.2f}" stroke-linecap="round" />'
-                            )
-                        except Exception:
-                            continue
-
-        if not paths_svg:
-            return "<p style='color:#a0a0a0; font-size:12px;'>No se detectaron entidades de corte compatibles</p>"
-
-        # 3. Retornar SVG armado
-        svg_code = f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
-            xmlns="http://www.w3.org/2000/svg" 
-            style="width: 100%; height: 100%; max-height: 250px; background-color: #1a1a1a; border-radius: 8px; display: block;"
-            preserveAspectRatio="xMidYMid meet">
-            <g transform="translate(0, {min_y + max_y:.2f}) scale(1, -1)">
-                {''.join(paths_svg)}
-            </g>
-        </svg>'''
-
-        return svg_code
-
-    except Exception as e:
-        print(f"Error generando SVG: {e}")
-        return "<p style='color:#a0a0a0; font-size:12px;'>Vista previa no disponible</p>"
 
 @app.get("/")
 async def read_root():
