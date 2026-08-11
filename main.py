@@ -237,11 +237,9 @@ DETALLE GENERAL DEL PEDIDO
 """
     msg.set_content(contenido_texto)
 
-    # Adjuntar todos los archivos DXF correspondientes
     for item in items_info:
         filepath = item.get("filepath")
         if filepath and os.path.exists(filepath):
-            filename = os.path.basename(filepath)
             with open(filepath, 'rb') as f:
                 file_data = f.read()
                 msg.add_attachment(file_data, maintype='application', subtype='dxf', filename=item['original_filename'])
@@ -537,14 +535,13 @@ async def cotizar(
 
 @app.post("/crear_pago")
 async def crear_pago(quote_id: str = Form(...)):
-    """Mantenido por compatibilidad individual si fuera necesario"""
-    return await crear_pago_carrito(item_ids=quote_id)
+    return await crear_pago_carrito(item_ids=quote_id, tipo_envio="retiro")
 
 
 @app.post("/crear_pago_carrito")
 async def crear_pago_carrito(
     item_ids: str = Form(...),
-    tipo_envio: str = Form("retiro") # "retiro" o "envio"
+    tipo_envio: str = Form("retiro")  # "retiro", "local" o "correo"
 ):
     if not sdk:
         raise HTTPException(status_code=500, detail="Mercado Pago SDK no inicializado")
@@ -572,14 +569,23 @@ async def crear_pago_carrito(
             })
             filepaths_asociados.append(qid)
 
-    # Agregar costo de envío fijo si el usuario lo selecciona (ej: $5000)
-    COSTO_ENVIO_FIJO = 5000.0
-    if tipo_envio == "envio":
+    # Calcular costo de envío dinámico según la opción seleccionada
+    costo_envio = 0.0
+    titulo_envio = ""
+
+    if tipo_envio == "local":
+        costo_envio = 5000.0
+        titulo_envio = "Envío Local / GBA"
+    elif tipo_envio == "correo":
+        costo_envio = 12000.0
+        titulo_envio = "Envío al Interior - Correo Argentino"
+
+    if costo_envio > 0:
         items_mp.append({
-            "title": "Envío a domicilio",
+            "title": titulo_envio,
             "quantity": 1,
             "currency_id": "ARS",
-            "unit_price": COSTO_ENVIO_FIJO
+            "unit_price": costo_envio
         })
 
     cart_reference_id = ",".join(filepaths_asociados)
@@ -605,22 +611,6 @@ async def crear_pago_carrito(
     preference = preference_response["response"]
     return {"init_point": preference["init_point"]}
 
-    try:
-        preference_response = sdk.preference().create(preference_data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
-
-    if preference_response.get("status") not in [200, 201]:
-        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago conjunta")
-
-    # Marcamos temporalmente todos como usados para evitar doble gasto
-    with QUOTES_LOCK:
-        for qid in filepaths_asociados:
-            QUOTES[qid]["used"] = True
-
-    preference = preference_response["response"]
-    return {"init_point": preference["init_point"]}
-
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -639,7 +629,6 @@ async def webhook(request: Request):
                     monto_total = str(payment_info.get("transaction_amount", "0"))
                     email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
 
-                    # Soportar múltiples IDs separados por coma o un ID único antiguo
                     quote_ids = [qid.strip() for qid in external_ref.split(",") if qid.strip()]
                     
                     items_encontrados = []
