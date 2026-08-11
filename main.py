@@ -208,9 +208,11 @@ def enviar_email_notificacion_carrito(email_cliente: str, items_info: list, mont
         return
 
     msg = EmailMessage()
-    msg['Subject'] = f'⚡ NUEVO PEDIDO MULTIPLE DE CORTE PAGADO ({len(items_info)} archivos)'
+    msg['Subject'] = f'⚡ NUEVO PEDIDO PAGADO ({len(items_info)} archivos) - ANDMAX'
     msg['From'] = SMTP_EMAIL
     msg['To'] = EMAIL_DESTINO
+
+    envio_info = items_info[0].get("datos_envio_cliente", {}) if items_info else {}
 
     detalle_items_texto = ""
     for idx, item in enumerate(items_info, 1):
@@ -225,15 +227,25 @@ def enviar_email_notificacion_carrito(email_cliente: str, items_info: list, mont
 """
 
     contenido_texto = f"""
-¡Hola! Se ha confirmado un nuevo pago de carrito múltiple de corte láser.
+¡Hola! Se ha confirmado un nuevo pago en el sistema.
 
 ==============================================
-DETALLE GENERAL DEL PEDIDO
+DATOS DE CONTACTO Y ENVÍO
 ==============================================
-• Cliente Contacto/Email: {email_cliente}
-• Monto Total Abonado: ${monto_total}
+• Email de Pago: {email_cliente}
+• Nombre: {envio_info.get('nombre', 'No especificado')}
+• Teléfono: {envio_info.get('telefono', 'No especificado')}
+• Tipo de Entrega: {envio_info.get('tipo', 'retiro').upper()}
+• Dirección: {envio_info.get('direccion', '-')}
+• Localidad: {envio_info.get('localidad', '-')}
+• Código Postal: {envio_info.get('cp', '-')}
+
+==============================================
+DETALLE DE LAS PIEZAS
+==============================================
 {detalle_items_texto}
 ==============================================
+Monto Total Abonado: ${monto_total}
 """
     msg.set_content(contenido_texto)
 
@@ -541,7 +553,12 @@ async def crear_pago(quote_id: str = Form(...)):
 @app.post("/crear_pago_carrito")
 async def crear_pago_carrito(
     item_ids: str = Form(...),
-    tipo_envio: str = Form("retiro")  # "retiro", "local" o "correo"
+    tipo_envio: str = Form("retiro"),  # "retiro", "local" o "correo"
+    nombre_envio: str = Form(""),
+    telefono_envio: str = Form(""),
+    direccion_envio: str = Form(""),
+    localidad_envio: str = Form(""),
+    cp_envio: str = Form("")
 ):
     if not sdk:
         raise HTTPException(status_code=500, detail="Mercado Pago SDK no inicializado")
@@ -572,13 +589,16 @@ async def crear_pago_carrito(
     # Calcular costo de envío dinámico según la opción seleccionada
     costo_envio = 0.0
     titulo_envio = ""
+    texto_envio_resumen = "Retira por el local"
 
     if tipo_envio == "local":
         costo_envio = 5000.0
         titulo_envio = "Envío Local / GBA"
+        texto_envio_resumen = f"Envío Local | Dir: {direccion_envio}, {localidad_envio} (CP: {cp_envio})"
     elif tipo_envio == "correo":
         costo_envio = 12000.0
         titulo_envio = "Envío al Interior - Correo Argentino"
+        texto_envio_resumen = f"Correo Argentino | Dir: {direccion_envio}, {localidad_envio} (CP: {cp_envio})"
 
     if costo_envio > 0:
         items_mp.append({
@@ -604,11 +624,21 @@ async def crear_pago_carrito(
     if preference_response.get("status") not in [200, 201]:
         raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago conjunta")
 
+    preference = preference_response["response"]
+    
     with QUOTES_LOCK:
         for qid in filepaths_asociados:
             QUOTES[qid]["used"] = True
+            QUOTES[qid]["datos_envio_cliente"] = {
+                "tipo": tipo_envio,
+                "nombre": nombre_envio,
+                "telefono": telefono_envio,
+                "direccion": direccion_envio,
+                "localidad": localidad_envio,
+                "cp": cp_envio,
+                "resumen": texto_envio_resumen
+            }
 
-    preference = preference_response["response"]
     return {"init_point": preference["init_point"]}
 
 
