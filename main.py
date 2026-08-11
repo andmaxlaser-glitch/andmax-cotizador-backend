@@ -102,24 +102,45 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG centrado y escalado correctamente sin recortar bordes."""
+    """Genera un SVG calculando el encuadre real punto por punto a partir de los paths convertidos."""
     try:
-        extents = bbox.extents(msp)
-        if not extents.has_data:
-            return "<p style='color:#a0a0a0; font-size:12px;'>DXF sin vectores visibles</p>"
+        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
+        paths_data = []
+        all_points_x = []
+        all_points_y = []
 
-        min_x, min_y = extents.extmin.x, extents.extmin.y
-        max_x, max_y = extents.extmax.x, extents.extmax.y
+        # Convertimos las entidades a caminos (paths) de ezdxf
+        for entity in msp:
+            if entity.dxftype() not in ENTIDADES_CORTE:
+                continue
+            try:
+                p = path.make_path(entity)
+                d_str = path.to_svg_path_data([p])
+                if d_str and d_str.strip():
+                    paths_data.append(d_str)
+                    # Extraer puntos del path para calcular la caja de forma manual y exacta
+                    for control_point in p:
+                        all_points_x.append(control_point.x)
+                        all_points_y.append(control_point.y)
+            except Exception:
+                continue
+
+        if not paths_data or not all_points_x or not all_points_y:
+            return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles para vista previa</p>"
+
+        # Puntos mínimos y máximos reales extraídos directo de los trazos renderizados
+        min_x, max_x = min(all_points_x), max(all_points_x)
+        min_y, max_y = min(all_points_y), max(all_points_y)
 
         width = max_x - min_x
         height = max_y - min_y
 
         if width <= 0 or height <= 0:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas</p>"
+            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas para renderizado</p>"
 
-        # Margen del 10% para asegurar que ningún trazo toque los bordes del contenedor
-        margin_x = width * 0.10
-        margin_y = height * 0.10
+        # Margen de seguridad del 8% alrededor de la figura exacta
+        margin_x = width * 0.08
+        margin_y = height * 0.08
         margin = max(margin_x, margin_y, 1.0)
 
         vb_x = min_x - margin
@@ -127,44 +148,19 @@ def generar_svg_preview(doc, msp) -> str:
         vb_w = width + (margin * 2)
         vb_h = height + (margin * 2)
 
-        # Grosor de línea adaptativo en función de la escala
-        stroke_width = max(max(width, height) / 200.0, 0.5)
-        paths_svg = []
+        stroke_width = max(max(width, height) / 220.0, 0.4)
 
-        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
+        paths_svg = [
+            f'<path d="{d}" stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round" stroke-linejoin="round" />'
+            for d in paths_data
+        ]
 
-        for entity in msp:
-            dxftype = entity.dxftype()
-            if dxftype not in ENTIDADES_CORTE:
-                continue
-
-            stroke_attr = f'stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round" stroke-linejoin="round"'
-            
-            try:
-                p = path.make_path(entity)
-                d_str = path.to_svg_path_data([p])
-                if d_str and d_str.strip():
-                    paths_svg.append(f'<path d="{d_str}" {stroke_attr} />')
-            except Exception:
-                try:
-                    if dxftype == 'LINE':
-                        s, e = entity.dxf.start, entity.dxf.end
-                        paths_svg.append(f'<line x1="{s.x:.2f}" y1="{s.y:.2f}" x2="{e.x:.2f}" y2="{e.y:.2f}" {stroke_attr} />')
-                    elif dxftype == 'CIRCLE':
-                        c, r = entity.dxf.center, entity.dxf.radius
-                        paths_svg.append(f'<circle cx="{c.x:.2f}" cy="{c.y:.2f}" r="{r:.2f}" {stroke_attr} />')
-                except Exception:
-                    continue
-
-        if not paths_svg:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles</p>"
-
-        # Inversión de eje Y alineada correctamente al punto medio Y para evitar desplazamientos fuera del encuadre
+        # En SVG invertimos la Y tomando el origen Y del viewBox en min_y + max_y
         center_y = min_y + max_y
 
         return f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
             xmlns="http://www.w3.org/2000/svg" 
-            style="width: 100%; height: 280px; background-color: #111; border-radius: 6px; display: block;"
+            style="width: 100%; height: 280px; background-color: #0d0d0d; border-radius: 6px; display: block;"
             preserveAspectRatio="xMidYMid meet">
             <g transform="translate(0, {center_y:.2f}) scale(1, -1)">
                 {''.join(paths_svg)}
