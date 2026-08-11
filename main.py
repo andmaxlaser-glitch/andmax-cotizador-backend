@@ -203,43 +203,55 @@ def generar_svg_preview(doc, msp) -> str:
         return "<p style='color:#a0a0a0; font-size:12px;'>Vista previa no disponible</p>"
 
 
-def enviar_email_notificacion(email_cliente: str, filepath: str, material: str, espesor: str, metros: str, piercings: str, monto: str):
+def enviar_email_notificacion_carrito(email_cliente: str, items_info: list, monto_total: str):
     if not SMTP_EMAIL or not SMTP_PASSWORD:
         return
 
     msg = EmailMessage()
-    msg['Subject'] = f'⚡ NUEVO PEDIDO DE CORTE PAGADO: {material.upper()} {espesor}mm'
+    msg['Subject'] = f'⚡ NUEVO PEDIDO MULTIPLE DE CORTE PAGADO ({len(items_info)} archivos)'
     msg['From'] = SMTP_EMAIL
     msg['To'] = EMAIL_DESTINO
 
+    detalle_items_texto = ""
+    for idx, item in enumerate(items_info, 1):
+        detalle_items_texto += f"""
+--- ITEM {idx} ---
+• Archivo: {item['original_filename']}
+• Material: {item['material'].upper()}
+• Espesor: {item['espesor']} mm
+• Metros de corte: {item['metros_corte']} m
+• Piercings: {item['piercings']}
+• Subtotal: ${item['total_estimado']}
+"""
+
     contenido_texto = f"""
-¡Hola! Se ha confirmado un nuevo pago de corte láser.
+¡Hola! Se ha confirmado un nuevo pago de carrito múltiple de corte láser.
 
 ==============================================
-DETALLE DEL TRABAJO DE CORTE
+DETALLE GENERAL DEL PEDIDO
 ==============================================
-• Material: {material.upper()}
-• Espesor: {espesor} mm
-• Metros de corte calculados: {metros} m
-• Perforaciones (Piercings): {piercings}
-• Monto Total Abonado: ${monto}
 • Cliente Contacto/Email: {email_cliente}
+• Monto Total Abonado: ${monto_total}
+{detalle_items_texto}
 ==============================================
 """
     msg.set_content(contenido_texto)
 
-    if os.path.exists(filepath):
-        filename = os.path.basename(filepath)
-        with open(filepath, 'rb') as f:
-            file_data = f.read()
-            msg.add_attachment(file_data, maintype='application', subtype='dxf', filename=filename)
+    # Adjuntar todos los archivos DXF correspondientes
+    for item in items_info:
+        filepath = item.get("filepath")
+        if filepath and os.path.exists(filepath):
+            filename = os.path.basename(filepath)
+            with open(filepath, 'rb') as f:
+                file_data = f.read()
+                msg.add_attachment(file_data, maintype='application', subtype='dxf', filename=item['original_filename'])
 
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(SMTP_EMAIL, SMTP_PASSWORD)
             smtp.send_message(msg)
     except Exception as e:
-        print(f"Error enviando email: {e}")
+        print(f"Error enviando email de carrito: {e}")
 
 
 def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> tuple[float, float]:
@@ -525,32 +537,48 @@ async def cotizar(
 
 @app.post("/crear_pago")
 async def crear_pago(quote_id: str = Form(...)):
+    """Mantenido por compatibilidad individual si fuera necesario"""
+    return await crear_pago_carrito(item_ids=quote_id)
+
+
+@app.post("/crear_pago_carrito")
+async def crear_pago_carrito(item_ids: str = Form(...)):
+    """
+    Recibe los IDs de las cotizaciones separados por coma (ej: 'id1,id2,id3')
+    y genera una sola preferencia de pago en Mercado Pago sumando los totales.
+    """
     if not sdk:
         raise HTTPException(status_code=500, detail="Mercado Pago SDK no inicializado")
 
+    ids_list = [i.strip() for i in item_ids.split(",") if i.strip()]
+    if not ids_list:
+        raise HTTPException(status_code=400, detail="El carrito está vacío.")
+
+    items_mp = []
+    filepaths_asociados = []
+    
     with QUOTES_LOCK:
-        quote = QUOTES.get(quote_id)
-
-    if not quote:
-        raise HTTPException(status_code=404, detail="Cotización no encontrada o vencida. Volvé a subir el archivo.")
-    if quote["used"]:
-        raise HTTPException(status_code=409, detail="Esta cotización ya generó un pago.")
-
-    monto = float(quote["total_estimado"])
-    titulo = quote["original_filename"]
-
-    external_data = f"{quote_id}"
-
-    preference_data = {
-        "items": [
-            {
-                "title": f"Corte Láser DXF: {titulo}",
+        for qid in ids_list:
+            quote = QUOTES.get(qid)
+            if not quote:
+                raise HTTPException(status_code=404, detail="Una de las cotizaciones expiró o no existe. Volvé a cargar los archivos.")
+            if quote["used"]:
+                raise HTTPException(status_code=409, detail=f"El archivo {quote['original_filename']} ya fue procesado en otro pago.")
+            
+            items_mp.append({
+                "title": f"Corte: {quote['original_filename']} ({quote['material']} {quote['espesor']}mm)",
                 "quantity": 1,
                 "currency_id": "ARS",
-                "unit_price": float(monto)
-            }
-        ],
-        "external_reference": external_data,
+                "unit_price": float(quote["total_estimado"])
+            })
+            filepaths_asociados.append(qid)
+
+    # Identificador compuesto guardado en external_reference
+    cart_reference_id = ",".join(filepaths_asociados)
+
+    preference_data = {
+        "items": items_mp,
+        "external_reference": cart_reference_id,
         "notification_url": "https://andmax-cotizador-api.onrender.com/webhook"
     }
 
@@ -560,10 +588,12 @@ async def crear_pago(quote_id: str = Form(...)):
         raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
 
     if preference_response.get("status") not in [200, 201]:
-        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago en Mercado Pago")
+        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago conjunta")
 
+    # Marcamos temporalmente todos como usados para evitar doble gasto
     with QUOTES_LOCK:
-        QUOTES[quote_id]["used"] = True
+        for qid in filepaths_asociados:
+            QUOTES[qid]["used"] = True
 
     preference = preference_response["response"]
     return {"init_point": preference["init_point"]}
@@ -582,22 +612,25 @@ async def webhook(request: Request):
                 payment_info = payment_response.get("response", {})
 
                 if payment_info.get("status") == "approved":
-                    quote_id = payment_info.get("external_reference", "")
+                    external_ref = payment_info.get("external_reference", "")
+                    monto_total = str(payment_info.get("transaction_amount", "0"))
+                    email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
+
+                    # Soportar múltiples IDs separados por coma o un ID único antiguo
+                    quote_ids = [qid.strip() for qid in external_ref.split(",") if qid.strip()]
+                    
+                    items_encontrados = []
                     with QUOTES_LOCK:
-                        quote = QUOTES.get(quote_id)
+                        for qid in quote_ids:
+                            quote = QUOTES.get(qid)
+                            if quote:
+                                items_encontrados.append(quote)
 
-                    if quote:
-                        monto = payment_info.get("transaction_amount", quote["total_estimado"])
-                        email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
-
-                        enviar_email_notificacion(
+                    if items_encontrados:
+                        enviar_email_notificacion_carrito(
                             email_cliente=email_cliente,
-                            filepath=quote["filepath"],
-                            material=quote["material"],
-                            espesor=quote["espesor"],
-                            metros=str(quote["metros_corte"]),
-                            piercings=str(quote["piercings"]),
-                            monto=str(monto)
+                            items_info=items_encontrados,
+                            monto_total=monto_total
                         )
             except Exception as e:
                 print(f"Error procesando webhook de pago: {e}")
