@@ -76,12 +76,10 @@ El archivo .DXF original se encuentra adjunto en este correo listo para enviar a
         print(f"❌ Error al enviar el correo vía SMTP: {e}")
 
 
-def obtener_precio_metro(material_key: str, espesor_input: str) -> float:
+def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
     """
-    Busca la tarifa por metro convirtiendo el espesor a flotante y seleccionando
-    el precio correspondiente o la categoría inmediata superior si es un decimal intermedio.
+    Mapea el material y espesor recibidos desde el frontend a la tarifa correspondiente por metro lineal.
     """
-    # Tabla de precios ordenada por espesor (float)
     TARIFAS = {
         "mdf": {
             1.0: 600.0,
@@ -136,28 +134,38 @@ def obtener_precio_metro(material_key: str, espesor_input: str) -> float:
         }
     }
 
-    # Normalizar clave de material
-    mat = material_key.strip().lower().replace(" ", "_")
-    tarifas_material = TARIFAS.get(mat, TARIFAS.get("mdf"))
+    # Normalizar texto del material
+    mat_raw = str(material_input).lower().strip()
+    if "inox" in mat_raw:
+        mat_key = "acero_inoxidable"
+    elif "carbono" in mat_raw or "hierro" in mat_raw:
+        mat_key = "acero_carbono"
+    elif "acrilico" in mat_raw or "acrílico" in mat_raw:
+        mat_key = "acrilico"
+    elif "aluminio" in mat_raw:
+        mat_key = "aluminio"
+    else:
+        mat_key = "mdf"
 
-    # Parsear el espesor recibido (soporta "1.5", "1,5", 1.5, etc.)
+    # Convertir espesor
     try:
-        espesor_val = float(str(espesor_input).replace(",", "."))
+        espesor_val = float(str(espesor_input).replace(",", ".").strip())
     except (ValueError, TypeError):
         espesor_val = 3.0
 
+    tarifas_mat = TARIFAS[mat_key]
+
     # Búsqueda exacta
-    if espesor_val in tarifas_material:
-        return tarifas_material[espesor_val]
+    if espesor_val in tarifas_mat:
+        return tarifas_mat[espesor_val]
 
-    # Búsqueda de tarifa inmediata superior o la más alta disponible
-    espesores_disponibles = sorted(tarifas_material.keys())
-    for esp in espesores_disponibles:
+    # Si no es exacto, busca el espesor igual o inmediatamente superior
+    espesores_ordenados = sorted(tarifas_mat.keys())
+    for esp in espesores_ordenados:
         if esp >= espesor_val:
-            return tarifas_material[esp]
+            return tarifas_mat[esp]
 
-    # Si supera el máximo de la tabla, devuelve el precio del mayor espesor
-    return tarifas_material[espesores_disponibles[-1]]
+    return tarifas_mat[espesores_ordenados[-1]]
 
 
 @app.get("/")
@@ -212,7 +220,7 @@ async def cotizar(
 
         metros_corte = round(total_length_mm / 1000.0, 2)
 
-        # Búsqueda dinámica de la tarifa exacta por espesor
+        # Cálculo de tarifa por metro
         precio_metro = obtener_precio_metro(material, espesor)
 
         # Costos fijos
@@ -229,6 +237,7 @@ async def cotizar(
             "filepath": temp_filepath,
             "metros_corte": metros_corte,
             "piercings": piercings,
+            "precio_metro_aplicado": precio_metro,
             "costo_mecanizado": costo_mecanizado,
             "costo_material": costo_material,
             "costo_setup": COSTO_SETUP,
