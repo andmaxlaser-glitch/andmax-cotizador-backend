@@ -300,20 +300,16 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     all_points_x = []
     all_points_y = []
     
-    piezas_detectadas = 0
-    perforaciones_detectadas = 0
-
+    entidades_geom = []
     ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
 
-    def procesar_entidades(entidades):
-        nonlocal total_length_mm, piezas_detectadas, perforaciones_detectadas
+    def extraer_entidades(entidades):
         for entity in entidades:
             dxftype = entity.dxftype()
-            
             if dxftype == 'INSERT':
                 try:
                     if hasattr(entity, 'virtual_entities'):
-                        procesar_entidades(entity.virtual_entities())
+                        extraer_entidades(entity.virtual_entities())
                 except Exception:
                     pass
                 continue
@@ -321,108 +317,129 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
             if dxftype not in ENTIDADES_CORTE:
                 continue
 
-            geometria_procesada = False
-
-            # Intento 1: Usar path de ezdxf
             try:
-                p = path.make_path(entity)
-                if p:
+                # Extraer puntos y longitud básica de cada entidad
+                if dxftype == 'LINE':
+                    s, e = entity.dxf.start, entity.dxf.end
+                    length = s.distance(e)
+                    pts = [(float(s.x), float(s.y)), (float(e.x), float(e.y))]
+                    is_closed = False
+                elif dxftype == 'CIRCLE':
+                    c, r = entity.dxf.center, entity.dxf.radius
+                    length = 2 * math.pi * r
+                    pts = [(float(c.x), float(c.y))]
+                    is_closed = True
+                elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
+                    puntos = list(entity.get_points(format='xy'))
+                    length = 0.0
+                    pts = []
+                    for idx, pt in enumerate(puntos):
+                        px, py = float(pt[0]), float(pt[1])
+                        pts.append((px, py))
+                        if idx > 0:
+                            length += math.hypot(px - pts[idx-1][0], py - pts[idx-1][1])
+                    is_closed = getattr(entity, 'closed', False)
+                    if not is_closed and len(pts) > 2:
+                        is_closed = math.isclose(pts[0][0], pts[-1][0], abs_tol=1e-2) and math.isclose(pts[0][1], pts[-1][1], abs_tol=1e-2)
+                elif dxftype == 'ARC':
+                    c, r = entity.dxf.center, entity.dxf.radius
+                    sw = math.radians(entity.dxf.end_angle) - math.radians(entity.dxf.start_angle)
+                    if sw < 0: sw += 2 * math.pi
+                    length = r * sw
+                    pts = [(float(c.x), float(c.y))]
+                    is_closed = False
+                else:
+                    # Fallback general con ezdxf.path
+                    p = path.make_path(entity)
                     length = path.length(p)
-                    if length > 0:
-                        total_length_mm += length
-                    
-                    for pt in p.control_points():
-                        all_points_x.append(float(pt[0]))
-                        all_points_y.append(float(pt[1]))
-
+                    pts = [(float(pt[0]), float(pt[1])) for pt in p.control_points()]
                     is_closed = False
                     try:
                         is_closed = p.is_closed()
                     except Exception:
-                        pts = list(p.control_points())
-                        if len(pts) > 2:
-                            ini, fin = pts[0], pts[-1]
-                            if math.isclose(float(ini[0]), float(fin[0]), abs_tol=1e-2) and math.isclose(float(ini[1]), float(fin[1]), abs_tol=1e-2):
-                                is_closed = True
+                        pass
 
-                    if is_closed or dxfx_es_cerrada(entity):
-                        piezas_detectadas += 1
-                        perforaciones_detectadas += 1
-                    else:
-                        perforaciones_detectadas += 1
-
-                    geometria_procesada = True
+                if length > 0 or pts:
+                    total_length_mm += length
+                    for px, py in pts:
+                        all_points_x.append(px)
+                        all_points_y.append(py)
+                    
+                    # Guardamos el centroide aproximado y si es cerrado para agrupar
+                    cx = sum(p[0] for p in pts) / len(pts)
+                    cy = sum(p[1] for p in pts) / len(pts)
+                    entidades_geom.append({
+                        "type": dxftype,
+                        "center": (cx, cy),
+                        "is_closed": is_closed,
+                        "length": length
+                    })
             except Exception:
                 pass
 
-            # Intento 2: Fallback directo por tipo de entidad si path falló
-            if not geometria_procesada:
-                try:
-                    if dxftype == 'LINE':
-                        s, e = entity.dxf.start, entity.dxf.end
-                        total_length_mm += s.distance(e)
-                        all_points_x.extend([float(s.x), float(e.x)])
-                        all_points_y.extend([float(s.y), float(e.y)])
-                        perforaciones_detectadas += 1
-
-                    elif dxftype == 'CIRCLE':
-                        c, r = entity.dxf.center, entity.dxf.radius
-                        total_length_mm += 2 * math.pi * r
-                        all_points_x.extend([float(c.x - r), float(c.x + r)])
-                        all_points_y.extend([float(c.y - r), float(c.y + r)])
-                        piezas_detectadas += 1
-                        perforaciones_detectadas += 1
-
-                    elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
-                        puntos = list(entity.get_points(format='xy'))
-                        if puntos:
-                            for idx, pt in enumerate(puntos):
-                                px, py = float(pt[0]), float(pt[1])
-                                all_points_x.append(px)
-                                all_points_y.append(py)
-                                if idx > 0:
-                                    prev_pt = puntos[idx - 1]
-                                    total_length_mm += math.hypot(px - float(prev_pt[0]), py - float(prev_pt[1]))
-                            
-                            if getattr(entity, 'closed', False) or dxfx_es_cerrada(entity):
-                                piezas_detectadas += 1
-                                perforaciones_detectadas += 1
-                            else:
-                                perforaciones_detectadas += 1
-
-                    elif dxftype == 'ARC':
-                        c, r = entity.dxf.center, entity.dxf.radius
-                        start_angle = math.radians(entity.dxf.start_angle)
-                        end_angle = math.radians(entity.dxf.end_angle)
-                        sweep = end_angle - start_angle
-                        if sweep < 0:
-                            sweep += 2 * math.pi
-                        total_length_mm += r * sweep
-                        all_points_x.extend([float(c.x - r), float(c.x + r)])
-                        all_points_y.extend([float(c.y - r), float(c.y + r)])
-                        perforaciones_detectadas += 1
-                except Exception:
-                    pass
-
-    def dxfx_es_cerrada(entity) -> bool:
-        try:
-            if getattr(entity, 'closed', False):
-                return True
-            puntos = list(entity.get_points(format='xy'))
-            if len(puntos) > 2:
-                ini, fin = puntos[0], puntos[-1]
-                return math.isclose(float(ini[0]), float(fin[0]), abs_tol=1e-2) and math.isclose(float(ini[1]), float(fin[1]), abs_tol=1e-2)
-        except Exception:
-            pass
-        return False
-
-    procesar_entidades(msp)
+    extraer_entidades(msp)
     for block in doc.blocks:
         if not block.name.startswith('*'):
-            procesar_entidades(block)
+            extraer_entidades(block)
 
-    piezas_detectadas = max(1, piezas_detectadas)
+    # 1. CÁLCULO DE DIMENSIONES REALES (Ancho x Alto en mm)
+    if all_points_x and all_points_y:
+        ancho_pieza = round(max(all_points_x) - min(all_points_x), 2)
+        alto_pieza = round(max(all_points_y) - min(all_points_y), 2)
+    else:
+        ancho_pieza, alto_pieza = 0.0, 0.0
+
+    # 2. AGRUPAMIENTO ESPACIAL (Clustering) PARA DETECTAR PIEZAS SEPARADAS
+    # Agrupamos entidades cuyos centros estén cerca entre sí para formar componentes conexas (piezas)
+    componentes = []
+    tolerancia_agrupamiento = 15.0  # mm de distancia máxima para considerar que pertenecen a la misma pieza
+
+    for ent in entidades_geom:
+        c_ent = ent["center"]
+        encontrado = False
+        for comp in componentes:
+            # Comparamos la distancia con los elementos ya existentes en la componente
+            if any(math.hypot(c_ent[0] - e["center"][0], c_ent[1] - e["center"][1]) < tolerancia_agrupamiento for e in comp):
+                comp.append(ent)
+                encontrado = True
+                break
+        if not encontrado:
+            componentes.append([ent])
+
+    piezas_detectadas = max(1, len(componentes))
+    
+    # El número de perforaciones/piercings total se basa en los elementos cerrados independientes o círculos/agujeros
+    perforaciones_detectadas = sum(1 for e in entidades_geom if e["is_closed"] or e["type"] in ('CIRCLE', 'ARC'))
     perforaciones_detectadas = max(1, perforaciones_detectadas)
+
+    metros_corte = round(total_length_mm / 1000.0, 2)
+    precio_metro, costo_mat_unitario = obtener_precio_metro_y_material(material, espesor)
+
+    PRECIO_PIERCING = 50.0
+    COSTO_SETUP = 1500.0
+
+    costo_mecanizado = round((metros_corte * precio_metro) + (perforaciones_detectadas * PRECIO_PIERCING), 2)
+    costo_material = round(metros_corte * costo_mat_unitario, 2) if incluye_material else 0.0
+    total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
+
+    if math.isnan(total_estimado) or math.isinf(total_estimado) or total_estimado <= 0:
+        raise ValueError("El cálculo de la cotización generó un valor inválido.")
+
+    svg_preview = generar_svg_preview(doc, msp)
+
+    return {
+        "metros_corte": metros_corte,
+        "piercings": perforaciones_detectadas,
+        "ancho_mm": ancho_pieza,
+        "alto_mm": alto_pieza,
+        "piezas_detectadas": piezas_detectadas,
+        "precio_metro_aplicado": precio_metro,
+        "costo_mecanizado": costo_mecanizado,
+        "costo_material": costo_material,
+        "costo_setup": COSTO_SETUP,
+        "total_estimado": total_estimado,
+        "svg_preview": svg_preview,
+    }
 
     # 1. CÁLCULO DE DIMENSIONES REALES (Ancho x Alto en mm)
     if all_points_x and all_points_y:
