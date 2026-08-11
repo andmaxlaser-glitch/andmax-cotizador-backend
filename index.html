@@ -136,15 +136,19 @@
 
             <!-- Opciones de Envío / Retiro -->
             <div id="opciones-envio" style="display: none; margin-bottom: 15px; padding-top: 10px; border-top: 1px solid var(--border);">
-                <label style="margin-bottom: 6px; font-weight: bold; color: #fff;">Método de entrega:</label>
-                <div style="display: flex; gap: 15px; font-size: 14px; margin-top: 5px;">
+                <label style="margin-bottom: 8px; font-weight: bold; color: #fff;">Método de entrega:</label>
+                <div style="display: flex; flex-direction: column; gap: 8px; font-size: 14px; margin-top: 5px;">
                     <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text);">
-                        <input type="radio" name="tipoEnvio" value="retiro" checked onchange="actualizarTotalCarrito()" style="width: auto;"> 
+                        <input type="radio" name="tipoEnvio" value="retiro" data-costo="0" checked onchange="actualizarTotalCarrito()" style="width: auto;"> 
                         Retiro por el taller (Gratis)
                     </label>
                     <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text);">
-                        <input type="radio" name="tipoEnvio" value="envio" onchange="actualizarTotalCarrito()" style="width: auto;"> 
-                        Envío a domicilio ($5.000)
+                        <input type="radio" name="tipoEnvio" value="local" data-costo="5000" onchange="actualizarTotalCarrito()" style="width: auto;"> 
+                        Envío Local / GBA ($5.000)
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text);">
+                        <input type="radio" name="tipoEnvio" value="correo" data-costo="12000" onchange="actualizarTotalCarrito()" style="width: auto;"> 
+                        Envío al Interior - Correo Argentino ($12.000)
                     </label>
                 </div>
             </div>
@@ -160,7 +164,6 @@
     </div>
 
     <script>
-        const COSTO_ENVIO = 5000;
         let ultimaCotizacionActual = null;
         let carritoItems = [];
 
@@ -255,12 +258,10 @@
         function actualizarTotalCarrito() {
             let precioSubtotal = carritoItems.reduce((acc, item) => acc + item.total_estimado, 0);
             
-            const tipoEnvioSeleccionado = document.querySelector('input[name="tipoEnvio"]:checked').value;
-            let totalFinal = precioSubtotal;
-
-            if (tipoEnvioSeleccionado === 'envio') {
-                totalFinal += COSTO_ENVIO;
-            }
+            const radioSeleccionado = document.querySelector('input[name="tipoEnvio"]:checked');
+            let costoEnvio = radioSeleccionado ? parseFloat(radioSeleccionado.getAttribute('data-costo')) : 0;
+            
+            let totalFinal = precioSubtotal + costoEnvio;
 
             document.getElementById('carrito-total-precio').innerText = `$${totalFinal.toLocaleString('es-AR')} ARS`;
         }
@@ -278,7 +279,8 @@
             btn.innerText = 'Generando link de pago conjunto...';
 
             const idsString = carritoItems.map(item => item.quote_id).join(',');
-            const tipoEnvioSeleccionado = document.querySelector('input[name="tipoEnvio"]:checked').value;
+            const radioSeleccionado = document.querySelector('input[name="tipoEnvio"]:checked');
+            const tipoEnvioSeleccionado = radioSeleccionado ? radioSeleccionado.value : 'retiro';
 
             const formData = new FormData();
             formData.append('item_ids', idsString);
