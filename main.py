@@ -61,7 +61,6 @@ El archivo .DXF original se encuentra adjunto en este correo listo para enviar a
 """
     msg.set_content(contenido_texto)
 
-    # Adjuntar el archivo DXF si existe en el almacenamiento temporal
     if os.path.exists(filepath):
         filename = os.path.basename(filepath)
         with open(filepath, 'rb') as f:
@@ -77,6 +76,90 @@ El archivo .DXF original se encuentra adjunto en este correo listo para enviar a
         print(f"❌ Error al enviar el correo vía SMTP: {e}")
 
 
+def obtener_precio_metro(material_key: str, espesor_input: str) -> float:
+    """
+    Busca la tarifa por metro convirtiendo el espesor a flotante y seleccionando
+    el precio correspondiente o la categoría inmediata superior si es un decimal intermedio.
+    """
+    # Tabla de precios ordenada por espesor (float)
+    TARIFAS = {
+        "mdf": {
+            1.0: 600.0,
+            2.0: 700.0,
+            3.0: 800.0,
+            5.0: 900.0,
+            8.0: 1000.0,
+            10.0: 1200.0
+        },
+        "acrilico": {
+            1.0: 800.0,
+            2.0: 900.0,
+            3.0: 1000.0,
+            4.0: 1100.0,
+            5.0: 1200.0,
+            6.0: 1400.0,
+            8.0: 1600.0,
+            10.0: 1800.0
+        },
+        "acero_carbono": {
+            1.0: 8500.0,
+            2.0: 9350.0,
+            3.0: 10285.0,
+            4.0: 11313.0,
+            5.0: 12444.0,
+            6.0: 13689.0,
+            8.0: 15058.0,
+            10.0: 16564.0,
+            12.0: 18220.0
+        },
+        "acero_inoxidable": {
+            1.0: 8500.0,
+            2.0: 9350.0,
+            3.0: 10285.0,
+            4.0: 11313.0,
+            5.0: 12444.0,
+            6.0: 13689.0,
+            8.0: 15058.0,
+            10.0: 16564.0,
+            12.0: 18220.0
+        },
+        "aluminio": {
+            1.0: 8500.0,
+            2.0: 9350.0,
+            3.0: 10285.0,
+            4.0: 11313.0,
+            5.0: 12444.0,
+            6.0: 13689.0,
+            8.0: 15058.0,
+            10.0: 16564.0,
+            12.0: 18220.0
+        }
+    }
+
+    # Normalizar clave de material
+    mat = material_key.strip().lower().replace(" ", "_")
+    tarifas_material = TARIFAS.get(mat, TARIFAS.get("mdf"))
+
+    # Parsear el espesor recibido (soporta "1.5", "1,5", 1.5, etc.)
+    try:
+        espesor_val = float(str(espesor_input).replace(",", "."))
+    except (ValueError, TypeError):
+        espesor_val = 3.0
+
+    # Búsqueda exacta
+    if espesor_val in tarifas_material:
+        return tarifas_material[espesor_val]
+
+    # Búsqueda de tarifa inmediata superior o la más alta disponible
+    espesores_disponibles = sorted(tarifas_material.keys())
+    for esp in espesores_disponibles:
+        if esp >= espesor_val:
+            return tarifas_material[esp]
+
+    # Si supera el máximo de la tabla, devuelve el precio del mayor espesor
+    return tarifas_material[espesores_disponibles[-1]]
+
+
 @app.get("/")
 def read_root():
     return {"status": "Cotizador API ANDMAX Laser activo"}
@@ -89,7 +172,6 @@ async def cotizar(
     espesor: str = Form("3"),
     incluye_material: bool = Form(True)
 ):
-    # Guardar archivo temporalmente para procesamiento y posterior envío
     temp_filepath = os.path.join(TEMP_DIR, file.filename)
     with open(temp_filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -130,73 +212,14 @@ async def cotizar(
 
         metros_corte = round(total_length_mm / 1000.0, 2)
 
-        # TABLA DE TARIFAS REALES POR METRO DE CORTE (ARS)
-        TARIFAS_CORTE = {
-            "mdf": {
-                "1": 600.0,
-                "2": 700.0,
-                "3": 800.0,
-                "5": 900.0,
-                "8": 1000.0,
-                "10": 1200.0
-            },
-            "acrilico": {
-                "1": 800.0,
-                "2": 900.0,
-                "3": 1000.0,
-                "4": 1100.0,
-                "5": 1200.0,
-                "6": 1400.0,
-                "8": 1600.0,
-                "10": 1800.0
-            },
-            "acero_carbono": {
-                "1": 8500.0,
-                "2": 9350.0,
-                "3": 10285.0,
-                "4": 11313.0,
-                "5": 12444.0,
-                "6": 13689.0,
-                "8": 15058.0,
-                "10": 16564.0,
-                "12": 18220.0
-            },
-            "acero_inoxidable": {
-                "1": 8500.0,
-                "2": 9350.0,
-                "3": 10285.0,
-                "4": 11313.0,
-                "5": 12444.0,
-                "6": 13689.0,
-                "8": 15058.0,
-                "10": 16564.0,
-                "12": 18220.0
-            },
-            "aluminio": {
-                "1": 8500.0,
-                "2": 9350.0,
-                "3": 10285.0,
-                "4": 11313.0,
-                "5": 12444.0,
-                "6": 13689.0,
-                "8": 15058.0,
-                "10": 16564.0,
-                "12": 18220.0
-            }
-        }
+        # Búsqueda dinámica de la tarifa exacta por espesor
+        precio_metro = obtener_precio_metro(material, espesor)
 
-        # Normalizar el nombre del material a minúsculas y sin espacios
-        mat_key = material.strip().lower()
+        # Costos fijos
+        PRECIO_PIERCING = 50.0
+        COSTO_SETUP = 1500.0
 
-        # Obtener tarifa dinámica de corte por metro según material y espesor
-        tarifa_material = TARIFAS_CORTE.get(mat_key, {})
-        precio_metro = tarifa_material.get(str(espesor), 800.0)
-
-        # Costos fijos adicionales
-        PRECIO_PIERCING = 50.0   # Valor por perforación inicial
-        COSTO_SETUP = 1500.0      # Preparación / Puesta a punto
-
-        # Cálculos finales
+        # Cálculos de costo final
         costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
         costo_material = round(metros_corte * 800.0, 2) if incluye_material else 0.0
         total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
@@ -231,7 +254,6 @@ async def crear_pago(
     if not sdk:
         raise HTTPException(status_code=500, detail="Mercado Pago SDK no inicializado")
 
-    # Guardar metadatos dentro de external_reference para identificarlos en el Webhook
     external_data = f"{titulo}|{material}|{espesor}|{metros}|{piercings}"
 
     preference_data = {
@@ -255,7 +277,6 @@ async def crear_pago(
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    """Endpoint que recibe notificaciones automáticas de Mercado Pago."""
     query_params = request.query_params
     topic = query_params.get("topic") or query_params.get("type")
     
@@ -264,7 +285,6 @@ async def webhook(request: Request):
         if payment_id and sdk:
             payment_info = sdk.payment().get(payment_id)["response"]
             
-            # Verificar si el pago fue aprobado
             if payment_info.get("status") == "approved":
                 ext_ref = payment_info.get("external_reference", "")
                 parts = ext_ref.split("|")
@@ -280,7 +300,6 @@ async def webhook(request: Request):
                 
                 filepath = os.path.join(TEMP_DIR, archivo_nombre)
                 
-                # Ejecutar el envío de correo automático
                 enviar_email_notificacion(
                     email_cliente=email_cliente,
                     filepath=filepath,
