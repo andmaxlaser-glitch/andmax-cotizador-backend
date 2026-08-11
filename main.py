@@ -378,7 +378,6 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
         if not block.name.startswith('*'):
             extraer_entidades(block)
 
-    # Fallback definitivo: Si no capturó puntos por entidades individuales, leemos las extensiones globales del DXF ($EXTMIN / $EXTMAX)
     if not all_points_x or not all_points_y:
         try:
             extmin = doc.header.get('$EXTMIN')
