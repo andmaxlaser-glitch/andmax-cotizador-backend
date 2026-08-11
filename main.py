@@ -9,11 +9,23 @@ from threading import Lock
 from email.message import EmailMessage
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import mercadopago
 import ezdxf
 from ezdxf import path, bbox
 
 app = FastAPI()
+
+# Directorio base del proyecto
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# --------------------------------------------------------------------------
+# Archivos Estáticos e Interfaz Web
+# --------------------------------------------------------------------------
+static_dir = os.path.join(BASE_DIR, "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # --------------------------------------------------------------------------
 # CORS
@@ -159,10 +171,6 @@ DETALLE DEL TRABAJO DE CORTE
 
 
 def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> tuple[float, float]:
-    """
-    Retorna una tupla: (precio_corte_por_metro, precio_material_por_metro)
-    Ajustado según los costos reales de mercado (ej. Inox 316/L, Carbono, MDF, etc.).
-    """
     TARIFAS_CORTE = {
         "mdf": {1.0: 600.0, 2.0: 700.0, 3.0: 800.0, 5.0: 900.0, 8.0: 1000.0, 10.0: 1200.0},
         "acrilico": {1.0: 800.0, 2.0: 900.0, 3.0: 1000.0, 4.0: 1100.0, 5.0: 1200.0, 6.0: 1400.0, 8.0: 1600.0, 10.0: 1800.0},
@@ -171,7 +179,6 @@ def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> 
         "aluminio": {1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0}
     }
 
-    # Costo base aproximado de materia prima por metro lineal de corte compensado por espesor
     COSTOS_MATERIAL_BASE = {
         "mdf": 800.0,
         "acrilico": 1200.0,
@@ -205,7 +212,6 @@ def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> 
                 precio_corte = tarifas_mat[esp]
                 break
 
-    # Factor de ponderación por espesor para el material
     precio_material = COSTOS_MATERIAL_BASE[mat_key] * (espesor_val / 3.0)
     
     return float(precio_corte), float(round(precio_material, 2))
@@ -243,7 +249,6 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     costo_material = round(metros_corte * costo_mat_unitario, 2) if incluye_material else 0.0
     total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
 
-    # Validación estricta anti-NaN / Infinitos
     if math.isnan(total_estimado) or math.isinf(total_estimado) or total_estimado <= 0:
         raise ValueError("El cálculo de la cotización generó un valor inválido.")
 
@@ -262,8 +267,12 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
 
 
 @app.get("/")
-def read_root():
-    return {"status": "Cotizador API ANDMAX Laser activo"}
+async def read_root():
+    """Servir index.html si existe en la raíz del proyecto."""
+    html_path = os.path.join(BASE_DIR, "index.html")
+    if os.path.exists(html_path):
+        return FileResponse(html_path)
+    return {"status": "Cotizador API ANDMAX Laser activo (Falta index.html en la raíz)"}
 
 
 @app.post("/cotizar")
@@ -357,7 +366,6 @@ async def crear_pago(quote_id: str = Form(...)):
     }
 
     try:
-        # Sintaxis para SDK Mercado Pago v2.x+
         preference_response = sdk.preference().create(preference_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
@@ -381,7 +389,6 @@ async def webhook(request: Request):
         payment_id = query_params.get("id") or query_params.get("data.id")
         if payment_id and sdk:
             try:
-                # Sintaxis para SDK Mercado Pago v2.x+
                 payment_response = sdk.payment().get(payment_id)
                 payment_info = payment_response.get("response", {})
 
