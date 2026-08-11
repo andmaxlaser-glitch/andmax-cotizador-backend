@@ -65,18 +65,19 @@ async def cotizar_dxf(
 ):
     es_material_provisto = incluye_material.lower() == "true"
     
-    # Buscar tarifa del material y espesor seleccionado
+    # Obtener tarifas del material seleccionado
     mat_tarifas = TARIFAS.get(material, {})
     
-    # Si no encuentra el espesor exacto, toma el primero disponible
-    if espesor in mat_tarifas:
-        tarifa = mat_tarifas[espesor]
-    elif mat_tarifas:
-        primer_espesor = list(mat_tarifas.keys())[0]
-        tarifa = mat_tarifas[primer_espesor]
-    else:
-        # Tarifa por defecto si el material no existe en la lista
+    # Si el material no existe en la tabla, usamos una tarifa por defecto
+    if not mat_tarifas:
         tarifa = {"corte_m": 1000, "piercing": 100, "m2_mat": 20000}
+    else:
+        # Si el espesor solicitado está en la lista se usa, sino se toma el primero disponible
+        if espesor in mat_tarifas:
+            tarifa = mat_tarifas[espesor]
+        else:
+            primer_espesor = list(mat_tarifas.keys())[0]
+            tarifa = mat_tarifas[primer_espesor]
 
     # Guardar DXF en archivo temporal
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
@@ -118,14 +119,13 @@ async def cotizar_dxf(
 
         longitud_m = longitud_mm / 1000.0
 
-        # Cálculo de dimensiones y costo del material
+        # Dimensiones
         ancho_m = max(0.0, (max_x - min_x) / 1000.0) if max_x != float('-inf') else 0.1
         alto_m = max(0.0, (max_y - min_y) / 1000.0) if max_y != float('-inf') else 0.1
         
         area_m2 = ancho_m * alto_m
-        costo_material = (area_m2 * 1.15 * tarifa["m2_mat"]) if es_material_provisto else 0.0 # +15% desperdicio
+        costo_material = (area_m2 * 1.15 * tarifa["m2_mat"]) if es_material_provisto else 0.0
 
-        # Cálculos de mecanizado
         costo_corte = longitud_m * tarifa["corte_m"]
         costo_piercing = piercings * tarifa["piercing"]
         costo_mecanizado = costo_corte + costo_piercing
@@ -136,8 +136,6 @@ async def cotizar_dxf(
             "archivo": file.filename,
             "metros_corte": round(longitud_m, 2),
             "piercings": piercings,
-            "ancho_mm": round(ancho_m * 1000, 1),
-            "alto_mm": round(alto_m * 1000, 1),
             "costo_mecanizado": round(costo_mecanizado, 2),
             "costo_corte": round(costo_corte, 2),
             "costo_piercing": round(costo_piercing, 2),
