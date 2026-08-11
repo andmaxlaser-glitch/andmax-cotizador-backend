@@ -350,15 +350,37 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     else:
         ancho_pieza, alto_pieza = 0.0, 0.0
 
-    # 2. CONTEO ROBUSTO DE PIERCINGS Y PIEZAS
-    circulos_count = sum(1 for e in entidades_totales if e.dxftype() == 'CIRCLE')
-    arcos_count = sum(1 for e in entidades_totales if e.dxftype() == 'ARC')
-    poligonos_cerrados = sum(
-        1 for e in entidades_totales 
-        if e.dxftype() in ('LWPOLYLINE', 'POLYLINE') and getattr(e, 'closed', False)
-    )
+    # 2. CONTEO EXHAUSTIVO Y RECURSIVO DE PIERCINGS Y PIEZAS
+    circulos_count = 0
+    arcos_count = 0
+    poligonos_cerrados = 0
 
-    # Suma limpia de elementos independientes de entrada al material (piercings reales)
+    def contar_entidades_recursivo(entidades):
+        nonlocal circulos_count, arcos_count, poligonos_cerrados
+        for entity in entidades:
+            dxftype = entity.dxftype()
+            
+            if dxftype == 'INSERT':
+                try:
+                    if hasattr(entity, 'virtual_entities'):
+                        contar_entidades_recursivo(entity.virtual_entities())
+                except Exception:
+                    pass
+                continue
+
+            if dxftype == 'CIRCLE':
+                circulos_count += 1
+            elif dxftype == 'ARC':
+                arcos_count += 1
+            elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
+                if getattr(entity, 'closed', False):
+                    poligonos_cerrados += 1
+
+    contar_entidades_recursivo(msp)
+    for block in doc.blocks:
+        if not block.name.startswith('*'):
+            contar_entidades_recursivo(block)
+
     total_perforaciones = circulos_count + poligonos_cerrados + arcos_count
     
     if total_perforaciones == 0:
