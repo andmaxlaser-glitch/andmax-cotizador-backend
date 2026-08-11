@@ -102,7 +102,7 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG extrayendo todas las geometrías de manera recursiva (incluyendo bloques)."""
+    """Genera un SVG seguro extrayendo trayectorias de forma robusta."""
     try:
         paths_data = []
         all_points_x = []
@@ -111,7 +111,6 @@ def generar_svg_preview(doc, msp) -> str:
         def extraer_de_contenedor(entidades):
             for entity in entidades:
                 dxftype = entity.dxftype()
-
                 if dxftype == 'INSERT':
                     try:
                         if hasattr(entity, 'virtual_entities'):
@@ -137,13 +136,11 @@ def generar_svg_preview(doc, msp) -> str:
                         all_points_x.extend([s.x, e.x])
                         all_points_y.extend([s.y, e.y])
                         paths_data.append(f"M {s.x:.2f} {s.y:.2f} L {e.x:.2f} {e.y:.2f}")
-
                     elif dxftype == 'CIRCLE':
                         c, r = entity.dxf.center, entity.dxf.radius
                         all_points_x.extend([c.x - r, c.x + r])
                         all_points_y.extend([c.y - r, c.y + r])
                         paths_data.append(f"M {c.x - r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x + r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x - r:.2f} {c.y:.2f}")
-
                     elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
                         puntos = list(entity.get_points(format='xy'))
                         if puntos:
@@ -154,7 +151,7 @@ def generar_svg_preview(doc, msp) -> str:
                                 all_points_y.append(py)
                                 prefix = "M" if idx == 0 else "L"
                                 pts_str.append(f"{prefix} {px:.2f} {py:.2f}")
-                            if entity.closed:
+                            if getattr(entity, 'closed', False):
                                 pts_str.append("Z")
                             paths_data.append(" ".join(pts_str))
                 except Exception:
@@ -299,11 +296,11 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     total_length_mm = 0.0
     all_points_x = []
     all_points_y = []
-    
     entidades_geom = []
     ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
 
     def extraer_entidades(entidades):
+        nonlocal total_length_mm
         for entity in entidades:
             dxftype = entity.dxftype()
             if dxftype == 'INSERT':
@@ -351,7 +348,9 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
                 else:
                     p = path.make_path(entity)
                     length = path.length(p)
-                    pts = [(float(pt[0]), float(pt[1])) for pt in p.control_points()]
+                    control_pts = list(p.control_points())
+                    if control_pts:
+                        pts = [(float(pt[0]), float(pt[1])) for pt in control_pts]
                     try:
                         is_closed = p.is_closed()
                     except Exception:
@@ -378,6 +377,17 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
     for block in doc.blocks:
         if not block.name.startswith('*'):
             extraer_entidades(block)
+
+    # Fallback definitivo: Si no capturó puntos por entidades individuales, leemos las extensiones globales del DXF ($EXTMIN / $EXTMAX)
+    if not all_points_x or not all_points_y:
+        try:
+            extmin = doc.header.get('$EXTMIN')
+            extmax = doc.header.get('$EXTMAX')
+            if extmin and extmax:
+                all_points_x = [float(extmin[0]), float(extmax[0])]
+                all_points_y = [float(extmin[1]), float(extmax[1])]
+        except Exception:
+            pass
 
     if all_points_x and all_points_y:
         ancho_pieza = round(max(all_points_x) - min(all_points_x), 2)
