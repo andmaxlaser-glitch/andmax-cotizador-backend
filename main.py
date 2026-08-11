@@ -11,7 +11,7 @@ from ezdxf import path
 
 app = FastAPI()
 
-# Permitir solicitudes desde el Frontend
+# Permitir solicitudes CORS desde el Frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,11 +20,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuración de Mercado Pago (Librería oficial mercadopago)
+# Configuración de Mercado Pago (Librería oficial mercadopago v2.x)
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 
-# Configuración de credenciales de Email
+# Configuración de SMTP para notificaciones por email
 SMTP_EMAIL = os.getenv("SMTP_EMAIL")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 EMAIL_DESTINO = os.getenv("EMAIL_DESTINO", SMTP_EMAIL)
@@ -37,7 +37,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 def enviar_email_notificacion(email_cliente: str, filepath: str, material: str, espesor: str, metros: str, piercings: str, monto: str):
     """Envía un correo con el archivo DXF adjunto y las especificaciones del corte."""
     if not SMTP_EMAIL or not SMTP_PASSWORD:
-        print("❌ Error: No se configuraron las variables SMTP_EMAIL o SMTP_PASSWORD.")
+        print("❌ Error: Variables SMTP_EMAIL o SMTP_PASSWORD no configuradas.")
         return
 
     msg = EmailMessage()
@@ -59,7 +59,7 @@ DETALLE DEL TRABAJO DE CORTE
 • Cliente Contacto/Email: {email_cliente}
 ==============================================
 
-El archivo .DXF original se encuentra adjunto en este correo listo para enviar al software de la máquina láser.
+El archivo .DXF original se encuentra adjunto en este correo.
 """
     msg.set_content(contenido_texto)
 
@@ -79,64 +79,26 @@ El archivo .DXF original se encuentra adjunto en este correo listo para enviar a
 
 
 def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
-    """
-    Busca de forma segura el precio por metro según material y espesor.
-    """
+    """Calcula la tarifa por metro lineal según material y espesor."""
     TARIFAS = {
         "mdf": {
-            1.0: 600.0,
-            2.0: 700.0,
-            3.0: 800.0,
-            5.0: 900.0,
-            8.0: 1000.0,
-            10.0: 1200.0
+            1.0: 600.0, 2.0: 700.0, 3.0: 800.0, 5.0: 900.0, 8.0: 1000.0, 10.0: 1200.0
         },
         "acrilico": {
-            1.0: 800.0,
-            2.0: 900.0,
-            3.0: 1000.0,
-            4.0: 1100.0,
-            5.0: 1200.0,
-            6.0: 1400.0,
-            8.0: 1600.0,
-            10.0: 1800.0
+            1.0: 800.0, 2.0: 900.0, 3.0: 1000.0, 4.0: 1100.0, 5.0: 1200.0, 6.0: 1400.0, 8.0: 1600.0, 10.0: 1800.0
         },
         "acero_carbono": {
-            1.0: 8500.0,
-            2.0: 9350.0,
-            3.0: 10285.0,
-            4.0: 11313.0,
-            5.0: 12444.0,
-            6.0: 13689.0,
-            8.0: 15058.0,
-            10.0: 16564.0,
-            12.0: 18220.0
+            1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0
         },
         "acero_inoxidable": {
-            1.0: 8500.0,
-            2.0: 9350.0,
-            3.0: 10285.0,
-            4.0: 11313.0,
-            5.0: 12444.0,
-            6.0: 13689.0,
-            8.0: 15058.0,
-            10.0: 16564.0,
-            12.0: 18220.0
+            1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0
         },
         "aluminio": {
-            1.0: 8500.0,
-            2.0: 9350.0,
-            3.0: 10285.0,
-            4.0: 11313.0,
-            5.0: 12444.0,
-            6.0: 13689.0,
-            8.0: 15058.0,
-            10.0: 16564.0,
-            12.0: 18220.0
+            1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0
         }
     }
 
-    # Normalización flexible de la clave del material
+    # Sanitización de la clave del material
     mat_str = str(material_input).lower().strip()
     if "inox" in mat_str:
         mat_key = "acero_inoxidable"
@@ -149,7 +111,7 @@ def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
     else:
         mat_key = "mdf"
 
-    # Extraer únicamente los dígitos y puntos/comas del valor de espesor
+    # Sanitización de espesor
     raw_esp = str(espesor_input).replace(",", ".").strip()
     esp_clean = "".join([c for c in raw_esp if c.isdigit() or c == '.'])
     
@@ -160,11 +122,10 @@ def obtener_precio_metro(material_input: str, espesor_input: str) -> float:
 
     tarifas_mat = TARIFAS[mat_key]
 
-    # Búsqueda de coincidencia exacta
     if espesor_val in tarifas_mat:
         return tarifas_mat[espesor_val]
 
-    # Búsqueda del espesor igual o inmediatamente superior en la lista
+    # Búsqueda del espesor más cercano (igual o superior)
     espesores_disponibles = sorted(tarifas_mat.keys())
     for esp in espesores_disponibles:
         if esp >= espesor_val:
@@ -196,31 +157,30 @@ async def cotizar(
         total_length_mm = 0.0
         piercings = 0
 
-        # Procesamiento preciso de entidades DXF (Soporta Splines, Polilíneas, Círculos, Arcos, etc.)
+        # Mapeo de entidades geométricas válidas para corte
+        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
+
         for entity in msp:
+            dxftype = entity.dxftype()
+            if dxftype not in ENTIDADES_CORTE:
+                continue
+
             piercings += 1
             try:
-                # Intenta convertir la entidad a trayectorias (paths) para medir longitud exacta
                 p = path.make_path(entity)
                 total_length_mm += path.length(p)
             except Exception:
-                # Mecanismo de reserva en caso de entidades no estándar
-                dxftype = entity.dxftype()
                 if dxftype == 'LINE':
                     total_length_mm += entity.dxf.start.distance(entity.dxf.end)
                 elif dxftype == 'CIRCLE':
                     total_length_mm += 2 * math.pi * entity.dxf.radius
 
         metros_corte = round(total_length_mm / 1000.0, 2)
-
-        # Búsqueda de precio según material y espesor
         precio_metro = obtener_precio_metro(material, espesor)
 
-        # Costos fijos
         PRECIO_PIERCING = 50.0
         COSTO_SETUP = 1500.0
 
-        # Cálculos de costo total
         costo_mecanizado = round((metros_corte * precio_metro) + (piercings * PRECIO_PIERCING), 2)
         costo_material = round(metros_corte * 800.0, 2) if incluye_material else 0.0
         total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
@@ -271,9 +231,14 @@ async def crear_pago(
         "notification_url": "https://andmax-cotizador-api.onrender.com/webhook"
     }
 
-    preference_response = sdk.preference().create(preference_data)
-    preference = preference_response["response"]
+    # Compatibilidad con SDK v2.x
+    preference_client = mercadopago.Preference(sdk)
+    preference_response = preference_client.create(preference_data)
+    
+    if preference_response.get("status") not in [200, 201]:
+        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago en Mercado Pago")
 
+    preference = preference_response["response"]
     return {"init_point": preference["init_point"]}
 
 
@@ -285,7 +250,8 @@ async def webhook(request: Request):
     if topic == "payment":
         payment_id = query_params.get("id") or query_params.get("data.id")
         if payment_id and sdk:
-            payment_info = sdk.payment().get(payment_id)["response"]
+            payment_client = mercadopago.Payment(sdk)
+            payment_info = payment_client.get(payment_id)["response"]
             
             if payment_info.get("status") == "approved":
                 ext_ref = payment_info.get("external_reference", "")
