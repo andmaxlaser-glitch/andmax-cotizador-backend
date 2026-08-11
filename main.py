@@ -542,11 +542,10 @@ async def crear_pago(quote_id: str = Form(...)):
 
 
 @app.post("/crear_pago_carrito")
-async def crear_pago_carrito(item_ids: str = Form(...)):
-    """
-    Recibe los IDs de las cotizaciones separados por coma (ej: 'id1,id2,id3')
-    y genera una sola preferencia de pago en Mercado Pago sumando los totales.
-    """
+async def crear_pago_carrito(
+    item_ids: str = Form(...),
+    tipo_envio: str = Form("retiro") # "retiro" o "envio"
+):
     if not sdk:
         raise HTTPException(status_code=500, detail="Mercado Pago SDK no inicializado")
 
@@ -573,7 +572,16 @@ async def crear_pago_carrito(item_ids: str = Form(...)):
             })
             filepaths_asociados.append(qid)
 
-    # Identificador compuesto guardado en external_reference
+    # Agregar costo de envío fijo si el usuario lo selecciona (ej: $5000)
+    COSTO_ENVIO_FIJO = 5000.0
+    if tipo_envio == "envio":
+        items_mp.append({
+            "title": "Envío a domicilio",
+            "quantity": 1,
+            "currency_id": "ARS",
+            "unit_price": COSTO_ENVIO_FIJO
+        })
+
     cart_reference_id = ",".join(filepaths_asociados)
 
     preference_data = {
@@ -581,6 +589,21 @@ async def crear_pago_carrito(item_ids: str = Form(...)):
         "external_reference": cart_reference_id,
         "notification_url": "https://andmax-cotizador-api.onrender.com/webhook"
     }
+
+    try:
+        preference_response = sdk.preference().create(preference_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
+
+    if preference_response.get("status") not in [200, 201]:
+        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago conjunta")
+
+    with QUOTES_LOCK:
+        for qid in filepaths_asociados:
+            QUOTES[qid]["used"] = True
+
+    preference = preference_response["response"]
+    return {"init_point": preference["init_point"]}
 
     try:
         preference_response = sdk.preference().create(preference_data)
