@@ -102,9 +102,83 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(msp) -> str:
-    """Genera un SVG vectorial extrayendo entidades directas, bloques e ítems descompuestos."""
+    """Genera un SVG vectorial visible con fuerza de trazo y soporte directo."""
     try:
-        # 1. Bounding box general
+        extents = bbox.extents(msp)
+        if not extents.has_data:
+            return "<div style='color:#fff; padding:10px;'>DXF sin vectores visibles</div>"
+
+        min_x, min_y = extents.extmin.x, extents.extmin.y
+        max_x, max_y = extents.extmax.x, extents.extmax.y
+
+        width = max_x - min_x
+        height = max_y - min_y
+
+        if width <= 0 or height <= 0:
+            return "<div style='color:#fff; padding:10px;'>Dimensiones inválidas</div>"
+
+        # Margen de seguridad
+        margin = max(width, height) * 0.05
+        vb_x = min_x - margin
+        vb_y = min_y - margin
+        vb_w = width + (margin * 2)
+        vb_h = height + (margin * 2)
+
+        # Grosor de trazo garantizado para visibilidad
+        stroke_width = max(max(width, height) / 150.0, 1.0)
+        paths_svg = []
+
+        ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
+
+        entities_to_process = list(msp.virtual_entities())
+        if not entities_to_process:
+            entities_to_process = list(msp)
+
+        for entity in entities_to_process:
+            dxftype = entity.dxftype()
+            if dxftype not in ENTIDADES_CORTE:
+                continue
+
+            # Trazo rojo brillante de alto contraste
+            stroke_attr = f'stroke="#ff4d4d" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round"'
+
+            try:
+                p = path.make_path(entity)
+                d_str = path.to_svg_path_data([p])
+                if d_str and d_str.strip():
+                    paths_svg.append(f'<path d="{d_str}" {stroke_attr} />')
+            except Exception:
+                try:
+                    if dxftype == 'LINE':
+                        s, e = entity.dxf.start, entity.dxf.end
+                        paths_svg.append(
+                            f'<line x1="{s.x:.2f}" y1="{s.y:.2f}" x2="{e.x:.2f}" y2="{e.y:.2f}" {stroke_attr} />'
+                        )
+                    elif dxftype == 'CIRCLE':
+                        c, r = entity.dxf.center, entity.dxf.radius
+                        paths_svg.append(
+                            f'<circle cx="{c.x:.2f}" cy="{c.y:.2f}" r="{r:.2f}" {stroke_attr} />'
+                        )
+                except Exception:
+                    continue
+
+        if not paths_svg:
+            return "<div style='color:#fff; padding:10px;'>No se encontraron entidades de corte</div>"
+
+        # SVG estilizado
+        svg_code = f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
+            xmlns="http://www.w3.org/2000/svg" 
+            style="width: 100%; height: 250px; background-color: #121212; border-radius: 8px; border: 1px solid #333; display: block;">
+            <g transform="translate(0, {min_y + max_y:.2f}) scale(1, -1)">
+                {''.join(paths_svg)}
+            </g>
+        </svg>'''
+
+        return svg_code
+
+    except Exception as e:
+        print(f"Error generando SVG: {e}")
+        return "<div style='color:#fff; padding:10px;'>Error al generar previsualización</div>"        # 1. Bounding box general
         extents = bbox.extents(msp)
         if not extents.has_data:
             return "<p style='color:#a0a0a0; font-size:12px;'>DXF sin vectores visibles</p>"
