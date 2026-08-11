@@ -104,11 +104,12 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(msp) -> str:
-    """Genera un string SVG vectorial a partir del ModelSpace del DXF."""
+    """Genera un string SVG vectorial robusto a partir del ModelSpace del DXF."""
     try:
+        # 1. Calcular el bounding box
         extents = bbox.extents(msp)
         if not extents.has_data:
-            return "<p style='color:#a0a0a0;'>DXF sin vectores visibles</p>"
+            return "<p style='color:#a0a0a0; font-size:12px;'>DXF sin vectores visibles</p>"
 
         min_x, min_y = extents.extmin.x, extents.extmin.y
         max_x, max_y = extents.extmax.x, extents.extmax.y
@@ -117,38 +118,52 @@ def generar_svg_preview(msp) -> str:
         height = max_y - min_y
 
         if width <= 0 or height <= 0:
-            return "<p style='color:#a0a0a0;'>Dimensiones de archivo no válidas</p>"
+            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones de plano inválidas</p>"
 
+        # Margen de seguridad del 5%
         margin = max(width, height) * 0.05
         vb_x = min_x - margin
         vb_y = min_y - margin
         vb_w = width + (margin * 2)
         vb_h = height + (margin * 2)
 
+        # Grosor de línea proporcional al tamaño de la pieza
+        stroke_width = max(width, height) / 300.0
+
         paths_svg = []
         ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
-
-        stroke_width = max(width, height) / 250.0
 
         for entity in msp:
             if entity.dxftype() in ENTIDADES_CORTE:
                 try:
                     p = path.make_path(entity)
                     d_str = path.to_svg_path_data([p])
-                    paths_svg.append(f'<path d="{d_str}" fill="none" stroke="#e63946" stroke-width="{stroke_width:.2f}" stroke-linecap="round" />')
+                    if d_str.strip():
+                        paths_svg.append(
+                            f'<path d="{d_str}" fill="none" stroke="#e63946" '
+                            f'stroke-width="{stroke_width:.2f}" stroke-linecap="round" stroke-linejoin="round" />'
+                        )
                 except Exception:
                     continue
 
-        svg_code = f'''<svg viewBox="{vb_x} {vb_y} {vb_w} {vb_h}" style="width:100%; height:100%; max-height:160px; transform: scaleY(-1);" xmlns="http://www.w3.org/2000/svg">
-            <g>
+        if not paths_svg:
+            return "<p style='color:#a0a0a0; font-size:12px;'>No se detectaron entidades de corte compatibles</p>"
+
+        # SVG con preservación de aspect ratio e inversión correcta del eje Y de CAD
+        svg_code = f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
+            xmlns="http://www.w3.org/2000/svg" 
+            style="width: 100%; height: 100%; max-height: 250px; background-color: #1a1a1a; border-radius: 8px; display: block;"
+            preserveAspectRatio="xMidYMid meet">
+            <g transform="translate(0, {min_y + max_y}) scale(1, -1)">
                 {''.join(paths_svg)}
             </g>
         </svg>'''
+        
         return svg_code
 
     except Exception as e:
         print(f"Error generando SVG: {e}")
-        return "<p style='color:#a0a0a0;'>Vista previa no disponible</p>"
+        return "<p style='color:#a0a0a0; font-size:12px;'>Vista previa no disponible</p>"
 
 
 def enviar_email_notificacion(email_cliente: str, filepath: str, material: str, espesor: str, metros: str, piercings: str, monto: str):
