@@ -357,8 +357,8 @@ async def crear_pago(quote_id: str = Form(...)):
     }
 
     try:
-        preference_client = mercadopago.Preference(sdk)
-        preference_response = preference_client.create(preference_data)
+        # Sintaxis para SDK Mercado Pago v2.x+
+        preference_response = sdk.preference().create(preference_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
 
@@ -381,8 +381,9 @@ async def webhook(request: Request):
         payment_id = query_params.get("id") or query_params.get("data.id")
         if payment_id and sdk:
             try:
-                payment_client = mercadopago.Payment(sdk)
-                payment_info = payment_client.get(payment_id)["response"]
+                # Sintaxis para SDK Mercado Pago v2.x+
+                payment_response = sdk.payment().get(payment_id)
+                payment_info = payment_response.get("response", {})
 
                 if payment_info.get("status") == "approved":
                     quote_id = payment_info.get("external_reference", "")
