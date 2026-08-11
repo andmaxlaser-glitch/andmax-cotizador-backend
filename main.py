@@ -102,7 +102,7 @@ def nombre_archivo_seguro(filename: str) -> str:
 
 
 def generar_svg_preview(doc, msp) -> str:
-    """Genera un SVG extrayendo directamente los puntos y vértices crudos de todas las entidades del DXF."""
+    """Genera un SVG extrayendo todas las geometrías de manera recursiva (incluyendo bloques)."""
     try:
         paths_data = []
         all_points_x = []
@@ -318,20 +318,22 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
                 continue
 
             try:
+                length = 0.0
+                pts = []
+                is_closed = False
+
                 if dxftype == 'LINE':
                     s, e = entity.dxf.start, entity.dxf.end
                     length = s.distance(e)
                     pts = [(float(s.x), float(s.y)), (float(e.x), float(e.y))]
-                    is_closed = False
                 elif dxftype == 'CIRCLE':
                     c, r = entity.dxf.center, entity.dxf.radius
                     length = 2 * math.pi * r
-                    pts = [(float(c.x), float(c.y))]
+                    pts = [(float(c.x - r), float(c.y)), (float(c.x + r), float(c.y)), (float(c.x), float(c.y - r)), (float(c.x), float(c.y + r))]
                     is_closed = True
                 elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
                     puntos = list(entity.get_points(format='xy'))
                     length = 0.0
-                    pts = []
                     for idx, pt in enumerate(puntos):
                         px, py = float(pt[0]), float(pt[1])
                         pts.append((px, py))
@@ -345,13 +347,11 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
                     sw = math.radians(entity.dxf.end_angle) - math.radians(entity.dxf.start_angle)
                     if sw < 0: sw += 2 * math.pi
                     length = r * sw
-                    pts = [(float(c.x), float(c.y))]
-                    is_closed = False
+                    pts = [(float(c.x - r), float(c.y)), (float(c.x + r), float(c.y))]
                 else:
                     p = path.make_path(entity)
                     length = path.length(p)
                     pts = [(float(pt[0]), float(pt[1])) for pt in p.control_points()]
-                    is_closed = False
                     try:
                         is_closed = p.is_closed()
                     except Exception:
@@ -363,8 +363,8 @@ def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_mate
                         all_points_x.append(px)
                         all_points_y.append(py)
                     
-                    cx = sum(p[0] for p in pts) / len(pts)
-                    cy = sum(p[1] for p in pts) / len(pts)
+                    cx = sum(p[0] for p in pts) / len(pts) if pts else 0.0
+                    cy = sum(p[1] for p in pts) / len(pts) if pts else 0.0
                     entidades_geom.append({
                         "type": dxftype,
                         "center": (cx, cy),
