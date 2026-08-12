@@ -13,7 +13,7 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "TU_API_KEY_DE_RESEND")
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 resend.api_key = RESEND_API_KEY
 
-# Interfaz visual actualizada: Fondo negro, botones rojos, verde para carrito, materiales actualizados sin "Iron", y manejo robusto del visor SVG
+# Interfaz principal con contador de carrito y diseño oscuro/rojo
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
@@ -84,26 +84,17 @@ HTML_TEMPLATE = """
         button.btn-red:hover {
             background-color: #ff1a1a;
         }
-        button.btn-green {
-            background-color: #00cc44;
-            color: white;
-            border: none;
-            padding: 12px 20px;
-            font-size: 16px;
-            border-radius: 5px;
-            cursor: pointer;
-            width: 100%;
+        .cart-indicator {
+            text-align: right;
+            margin-bottom: 15px;
+            color: #00cc44;
             font-weight: bold;
-            margin-top: 15px;
-            transition: background 0.3s;
-        }
-        button.btn-green:hover {
-            background-color: #00e64d;
         }
     </style>
 </head>
 <body>
     <div class="container">
+        <div class="cart-indicator">🛒 Ítems en el carrito: <span id="cart-count">0</span></div>
         <h1>andmax.laser - Sistema de Cotización</h1>
         
         <form action="/cotizar" method="post" enctype="multipart/form-data">
@@ -115,33 +106,39 @@ HTML_TEMPLATE = """
             <div class="form-group">
                 <label for="material">Material:</label>
                 <select name="material" id="material">
-                    <option value="inox_316">Acero Inoxidable 316/L</option>
-                    <option value="inox_304">Acero Inoxidable 304</option>
-                    <option value="carbon_steel">Acero al Carbono</option>
-                    <option value="aluminum">Aluminio</option>
-                    <option value="mdf">MDF</option>
-                    <option value="acrylic">Acrílico</option>
+                    <option value="Acero Inoxidable 316/L">Acero Inoxidable 316/L</option>
+                    <option value="Acero Inoxidable 304">Acero Inoxidable 304</option>
+                    <option value="Acero al Carbono">Acero al Carbono</option>
+                    <option value="Aluminio">Aluminio</option>
+                    <option value="MDF">MDF</option>
+                    <option value="Acrílico">Acrílico</option>
                 </select>
             </div>
 
             <div class="form-group">
                 <label for="espesor">Espesor:</label>
                 <select name="espesor" id="espesor">
-                    <option value="1mm">1 mm</option>
-                    <option value="1.5mm">1.5 mm</option>
-                    <option value="2mm">2 mm</option>
-                    <option value="3mm">3 mm</option>
-                    <option value="4mm">4 mm</option>
-                    <option value="5mm">5 mm</option>
-                    <option value="6mm">6 mm</option>
-                    <option value="8mm">8 mm</option>
-                    <option value="10mm">10 mm</option>
+                    <option value="1 mm">1 mm</option>
+                    <option value="1.5 mm">1.5 mm</option>
+                    <option value="2 mm">2 mm</option>
+                    <option value="3 mm">3 mm</option>
+                    <option value="4 mm">4 mm</option>
+                    <option value="5 mm">5 mm</option>
+                    <option value="6 mm">6 mm</option>
+                    <option value="8 mm">8 mm</option>
+                    <option value="10 mm">10 mm</option>
                 </select>
             </div>
 
             <button type="submit" class="btn-red">Calcular Pieza y Ver Plano</button>
         </form>
     </div>
+
+    <script>
+        // Actualizar contador en la página principal
+        const cart = JSON.parse(localStorage.getItem('andmax_cart')) || [];
+        document.getElementById('cart-count').innerText = cart.length;
+    </script>
 </body>
 </html>
 """
@@ -166,7 +163,6 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         line_count = len(msp.query('LINE'))
         circle_count = len(msp.query('CIRCLE'))
         
-        # Extracción segura de coordenadas para el visor SVG adaptándose a cualquier escala de CAD
         min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
         svg_paths = []
         
@@ -180,12 +176,10 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
                 min_y = min(min_y, start.y, end.y)
                 max_y = max(max_y, start.y, end.y)
                 
-                # Invertimos el eje Y porque en SVG el 0,0 está arriba y en CAD abajo
                 svg_paths.append(f'<line x1="{start.x}" y1="{-start.y}" x2="{end.x}" y2="{-end.y}" stroke="#ff3333" stroke-width="2"/>')
             except Exception:
                 continue
 
-        # Si hay rango válido de coordenadas, armamos un viewBox dinámico para que siempre se vea perfecto
         if min_x != float('inf') and max_x != float('-inf'):
             width_box = max_x - min_x if max_x != min_x else 100
             height_box = max_y - min_y if max_y != min_y else 100
@@ -196,14 +190,14 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         else:
             svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron líneas geométricas compatibles para renderizar en el visor.</p>'
         
-        # Cálculo de precio
-        factor_espesor = float(espesor.replace("mm", "").replace(",", "."))
+        # Cálculo de precio base
+        factor_espesor = float(espesor.replace("mm", "").replace(" ", "").replace(",", "."))
         precio_base = 4000 * factor_espesor
-        if "inox" in material:
+        if "Inoxidable" in material:
             precio_base *= 1.4
-        elif "aluminum" in material:
+        elif "Aluminio" in material:
             precio_base *= 1.3
-        elif "mdf" in material or "acrylic" in material:
+        elif "MDF" in material or "Acrílico" in material:
             precio_base *= 0.9
             
         total = precio_base + (line_count * 8) + (circle_count * 12)
@@ -216,6 +210,7 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
     if os.path.exists(temp_file_path):
         os.remove(temp_file_path)
         
+    # Plantilla de resultado con JavaScript interactivo para guardar el ítem en el LocalStorage
     return HTMLResponse(content=f"""
     <!DOCTYPE html>
     <html lang="es">
@@ -246,9 +241,27 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
 
             <h3 style="color: #00cc44;">Precio Total: ${total:,.2f} ARS</h3>
             
-            <button class="btn-green">Agregar al Carrito</button>
-            <a href="/" class="btn-red">← Volver al cotizador</a>
+            <button class="btn-green" onclick="addToCart()">Agregar al Carrito</button>
+            <a href="/" class="btn-red">← Cotizar otro archivo</a>
         </div>
+
+        <script>
+            function addToCart() {{
+                const item = {{
+                    filename: "{file.filename}",
+                    material: "{material}",
+                    espesor: "{espesor}",
+                    price: {total}
+                }};
+                
+                let cart = JSON.parse(localStorage.getItem('andmax_cart')) || [];
+                cart.push(item);
+                localStorage.setItem('andmax_cart', JSON.stringify(cart));
+                
+                alert("¡Pieza agregada al carrito con éxito!");
+                window.location.href = "/";
+            }}
+        </script>
     </body>
     </html>
     """)
