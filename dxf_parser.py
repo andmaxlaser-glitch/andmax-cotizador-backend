@@ -7,11 +7,9 @@ def procesar_archivo_dxf(ruta_archivo):
     
     lineas_extraidas = []
     
-    # Capturar líneas directas
     for entity in msp.query('LINE'):
         lineas_extraidas.append((entity.dxf.start.x, entity.dxf.start.y, entity.dxf.end.x, entity.dxf.end.y))
         
-    # Capturar polilíneas
     for polyl in msp.query('LWPOLYLINE'):
         puntos_poly = [(p[0], p[1]) for p in polyl.get_points(format='xy[sez]')]
         for i in range(len(puntos_poly) - 1):
@@ -20,34 +18,43 @@ def procesar_archivo_dxf(ruta_archivo):
             lineas_extraidas.append((puntos_poly[-1][0], puntos_poly[-1][1], puntos_poly[0][0], puntos_poly[0][1]))
 
     total_elementos = len(lineas_extraidas)
-    print(f"Total de segmentos encontrados: {total_elementos}")
-
+    
     if total_elementos == 0:
         return {"tipo": "VACIO", "elementos": 0}
 
-    # Si son miles de líneas (por ejemplo, más de 100), calculamos la caja contenedora (Bounding Box)
-    # para entender el tamaño real de la pieza sin importar cuántos micro-segmentos tenga.
-    min_x = min(min(l[0], l[2]) for l in lineas_extraidas)
-    max_x = max(max(l[0], l[2]) for l in lineas_extraidas)
-    min_y = min(min(l[1], l[3]) for l in lineas_extraidas)
-    max_y = max(max(l[1], l[3]) for l in lineas_extraidas)
-
-    ancho = max_x - min_x
-    alto = max_y - min_y
-
-    # Estimación geométrica inteligente basada en el contenedor
-    if total_elementos > 100:
-        # Probablemente sea una figura compleja o un círculo/rectángulo mallado
-        # Estimamos perímetro aproximado sumando los bordes de la caja o la longitud acumulada de los trazos
-        perimetro_acumulado = sum(math.hypot(l[2]-l[0], l[3]-l[1]) for l in lineas_extraidas)
+    # Calcular centroide y radio promedio de todos los puntos extremos
+    puntos = []
+    for l in lineas_extraidas:
+        puntos.append((l[0], l[1]))
+        puntos.append((l[2], l[3]))
         
-        return {
-            "tipo": "GEOMETRIA_MALLEADA_DETECTADA",
-            "elementos": total_elementos,
-            "ancho": round(ancho, 2),
-            "alto": round(alto, 2),
-            "perimetro": round(perimetro_acumulado, 2),
-            "area_aproximada": round(ancho * alto, 2)
-        }
+    n = len(puntos)
+    centro_x = sum(p[0] for p in puntos) / n
+    centro_y = sum(p[1] for p in puntos) / n
     
-    return {"tipo": "LINEAS_MULTIPLES", "elementos": total_elementos}
+    radios = [math.hypot(p[0] - centro_x, p[1] - centro_y) for p in puntos]
+    radio_promedio = sum(radios) / n
+    
+    # Calcular la desviación estándar de los radios para validar si es un círculo perfecto
+    varianza = sum((r - radio_promedio) ** 2 for r in radios) / n
+    desviacion = math.sqrt(varianza)
+    
+    # Si la desviación es muy baja (por ejemplo, menor a 0.5 mm), los 181 segmentos forman un círculo
+    if desviacion < 0.5 and total_elementos > 10:
+        perimetro_real = sum(math.hypot(l[2]-l[0], l[3]-l[1]) for l in lineas_extraidas)
+        return {
+            "tipo": "CIRCULO_DETECTADO",
+            "elementos_originales": total_elementos,
+            "centro": (round(centro_x, 2), round(centro_y, 2)),
+            "radio": round(radio_promedio, 2),
+            "perimetro": round(perimetro_real, 2),
+            "area": round(math.pi * (radio_promedio ** 2), 2)
+        }
+
+    # Si no es un círculo, devuelve el análisis estándar
+    perimetro_acumulado = sum(math.hypot(l[2]-l[0], l[3]-l[1]) for l in lineas_extraidas)
+    return {
+        "tipo": "LINEAS_MULTIPLES",
+        "elementos": total_elementos,
+        "perimetro": round(perimetro_acumulado, 2)
+    }
