@@ -1,3 +1,6 @@
+import sys
+# Esto limpia la caché de los módulos locales para forzar la recarga
+sys.dont_write_bytecode = True
 import os
 import ezdxf
 from fastapi import FastAPI, File, UploadFile, Form, Request, HTTPException
