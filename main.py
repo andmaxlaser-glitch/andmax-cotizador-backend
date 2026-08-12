@@ -13,14 +13,14 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "TU_API_KEY_DE_RESEND")
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 resend.api_key = RESEND_API_KEY
 
-# Interfaz visual con Carrito, fondo negro, botones rojos y verde para el carrito
+# Interfaz visual actualizada: Fondo negro, botones rojos, verde para carrito, selección completa de materiales, espesores y visor SVG
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>andmax.laser - Cotizador y Carrito de Cortes</title>
+    <title>andmax.laser - Sistema de Cotización</title>
     <style>
         body {
             background-color: #0b0b0b;
@@ -61,6 +61,13 @@ HTML_TEMPLATE = """
             margin-top: 10px;
             box-sizing: border-box;
         }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            font-weight: bold;
+            color: #ddd;
+        }
         button.btn-red {
             background-color: #e60000;
             color: white;
@@ -93,18 +100,11 @@ HTML_TEMPLATE = """
         button.btn-green:hover {
             background-color: #00e64d;
         }
-        .cart-section {
-            margin-top: 30px;
-            background: #1a1a1a;
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 4px solid #00cc44;
-        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>andmax.laser - Sistema de Cotización y Carrito</h1>
+        <h1>andmax.laser - Sistema de Cotización</h1>
         
         <form action="/cotizar" method="post" enctype="multipart/form-data">
             <div class="upload-box">
@@ -112,14 +112,32 @@ HTML_TEMPLATE = """
                 <input type="file" name="file" accept=".dxf" required>
             </div>
             
-            <label for="material">Material y Espesor:</label>
-            <select name="material" id="material">
-                <option value="inox_316_1mm">Acero Inoxidable 316/L - 1 mm</option>
-                <option value="inox_316_2mm">Acero Inoxidable 316/L - 2 mm</option>
-                <option value="inox_316_3mm">Acero Inoxidable 316/L - 3 mm</option>
-            </select>
+            <div class="form-group">
+                <label for="material">Material:</label>
+                <select name="material" id="material">
+                    <option value="inox_316">Acero Inoxidable 316/L</option>
+                    <option value="inox_304">Acero Inoxidable 304</option>
+                    <option value="carbon_steel">Acero al Carbono (Iron)</option>
+                    <option value="aluminum">Aluminio</option>
+                </select>
+            </div>
 
-            <button type="submit" class="btn-red">Calcular Pieza</button>
+            <div class="form-group">
+                <label for="espesor">Espesor:</label>
+                <select name="espesor" id="espesor">
+                    <option value="1mm">1 mm</option>
+                    <option value="1.5mm">1.5 mm</option>
+                    <option value="2mm">2 mm</option>
+                    <option value="3mm">3 mm</option>
+                    <option value="4mm">4 mm</option>
+                    <option value="5mm">5 mm</option>
+                    <option value="6mm">6 mm</option>
+                    <option value="8mm">8 mm</option>
+                    <option value="10mm">10 mm</option>
+                </select>
+            </div>
+
+            <button type="submit" class="btn-red">Calcular Pieza y Ver Plano</button>
         </form>
     </div>
 </body>
@@ -131,13 +149,14 @@ async def home():
     return HTML_TEMPLATE
 
 @app.post("/cotizar")
-async def cotizar(file: UploadFile = File(...), material: str = Form(...)):
+async def cotizar(file: UploadFile = File(...), material: str = Form(...), espesor: str = Form(...)):
     contents = await file.read()
     temp_file_path = f"temp_{file.filename}"
     
     with open(temp_file_path, "wb") as f:
         f.write(contents)
         
+    svg_content = ""
     try:
         doc = ezdxf.readfile(temp_file_path)
         msp = doc.modelspace()
@@ -145,13 +164,24 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...)):
         line_count = len(msp.query('LINE'))
         circle_count = len(msp.query('CIRCLE'))
         
-        precio_base = 5000
-        if "3mm" in material:
-            precio_base = 12000
-        elif "2mm" in material:
-            precio_base = 8500
+        # Generación simplificada de representación visual SVG básica para el visor
+        svg_paths = []
+        for entity in msp.query('LINE'):
+            start = entity.dxf.start
+            end = entity.dxf.end
+            svg_paths.append(f'<line x1="{start.x}" y1="{-start.y}" x2="{end.x}" y2="{-end.y}" stroke="#ff3333" stroke-width="1.5"/>')
+        
+        svg_content = f'<svg viewBox="-100 -100 400 400" width="100%" height="250" style="background:#000; border:1px solid #333; border-radius:5px;">' + "".join(svg_paths[:200]) + '</svg>'
+        
+        # Cálculo de precio basado en espesor y material
+        factor_espesor = float(espesor.replace("mm", "").replace(",", "."))
+        precio_base = 4000 * factor_espesor
+        if "inox_316" in material:
+            precio_base *= 1.4
+        elif "aluminum" in material:
+            precio_base *= 1.3
             
-        total = precio_base + (line_count * 10) + (circle_count * 15)
+        total = precio_base + (line_count * 8) + (circle_count * 12)
         
     except Exception as e:
         if os.path.exists(temp_file_path):
@@ -166,27 +196,33 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...)):
     <html lang="es">
     <head>
         <meta charset="UTF-8">
-        <title>Cotización - andmax.laser</title>
+        <title>Resultado - andmax.laser</title>
         <style>
             body {{ background-color: #0b0b0b; color: #f1f1f1; font-family: sans-serif; padding: 40px; }}
-            .container {{ max-width: 600px; margin: 0 auto; background: #141414; padding: 30px; border-radius: 12px; border: 1px solid #222; }}
+            .container {{ max-width: 700px; margin: 0 auto; background: #141414; padding: 30px; border-radius: 12px; border: 1px solid #222; }}
             h2 {{ color: #ff3333; }}
-            .btn-green {{ background-color: #00cc44; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; text-decoration: none; display: block; text-align: center; margin-top: 20px; }}
+            .btn-green {{ background-color: #00cc44; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; text-decoration: none; display: block; text-align: center; margin-top: 15px; }}
             .btn-green:hover {{ background-color: #00e64d; }}
             .btn-red {{ background-color: #e60000; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; text-decoration: none; display: block; text-align: center; margin-top: 10px; }}
             .btn-red:hover {{ background-color: #ff1a1a; }}
+            .visor-container {{ margin: 20px 0; text-align: center; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h2>Resultado de Cotización</h2>
+            <h2>Resultado de tu Cotización</h2>
             <p><strong>Archivo:</strong> {file.filename}</p>
-            <p><strong>Material:</strong> {material}</p>
-            <p><strong>Elementos detectados:</strong> {line_count} líneas, {circle_count} círculos</p>
-            <h3 style="color: #00cc44;">Subtotal: ${total:,.2f} ARS</h3>
+            <p><strong>Material:</strong> {material} | <strong>Espesor:</strong> {espesor}</p>
+            
+            <div class="visor-container">
+                <p style="text-align: left; margin-bottom: 5px;"><strong>Visor DXF (Previsualización):</strong></p>
+                {svg_content}
+            </div>
+
+            <h3 style="color: #00cc44;">Precio Total: ${total:,.2f} ARS</h3>
             
             <button class="btn-green">Agregar al Carrito</button>
-            <a href="/" class="btn-red">Volver / Cotizar otro archivo</a>
+            <a href="/" class="btn-red">← Volver al cotizador</a>
         </div>
     </body>
     </html>
