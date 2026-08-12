@@ -2,27 +2,25 @@ import os
 import ezdxf
 from fastapi import FastAPI, File, UploadFile, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 import mercadopago
 import resend
 
 app = FastAPI()
 
-# Configuración de credenciales (usando variables de entorno o valores por defecto)
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "TU_ACCESS_TOKEN_DE_MERCADOPAGO")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "TU_API_KEY_DE_RESEND")
 
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 resend.api_key = RESEND_API_KEY
 
-# Interfaz visual (HTML + CSS embebido con fondo negro, botones rojos y verde para carrito)
+# Interfaz visual con Carrito, fondo negro, botones rojos y verde para el carrito
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cotizador Láser - andmax.laser</title>
+    <title>andmax.laser - Cotizador y Carrito de Cortes</title>
     <style>
         body {
             background-color: #0b0b0b;
@@ -32,13 +30,13 @@ HTML_TEMPLATE = """
             padding: 20px;
         }
         .container {
-            max-width: 800px;
+            max-width: 900px;
             margin: 0 auto;
             background: #141414;
             padding: 30px;
             border-radius: 12px;
             box-shadow: 0 4px 20px rgba(255, 0, 0, 0.15);
-            border: 1px: #222;
+            border: 1px solid #222;
         }
         h1 {
             color: #ff3333;
@@ -47,13 +45,13 @@ HTML_TEMPLATE = """
         }
         .upload-box {
             border: 2px dashed #ff3333;
-            padding: 25px;
+            padding: 20px;
             text-align: center;
             border-radius: 8px;
             margin-bottom: 20px;
             background: #1a1a1a;
         }
-        input[type="file"], select {
+        input[type="file"], select, input[type="text"], input[type="email"] {
             background: #222;
             color: #fff;
             padding: 10px;
@@ -95,21 +93,22 @@ HTML_TEMPLATE = """
         button.btn-green:hover {
             background-color: #00e64d;
         }
-        .result-box {
-            margin-top: 25px;
+        .cart-section {
+            margin-top: 30px;
             background: #1a1a1a;
             padding: 20px;
             border-radius: 8px;
-            border-left: 4px solid #ff3333;
+            border-left: 4px solid #00cc44;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>andmax.laser - Cotizador Automático</h1>
+        <h1>andmax.laser - Sistema de Cotización y Carrito</h1>
+        
         <form action="/cotizar" method="post" enctype="multipart/form-data">
             <div class="upload-box">
-                <label for="file">Subí tu archivo CAD (DXF):</label>
+                <label for="file"><strong>Subí tu archivo CAD (DXF):</strong></label>
                 <input type="file" name="file" accept=".dxf" required>
             </div>
             
@@ -120,7 +119,7 @@ HTML_TEMPLATE = """
                 <option value="inox_316_3mm">Acero Inoxidable 316/L - 3 mm</option>
             </select>
 
-            <button type="submit" class="btn-red">Calcular Cotización</button>
+            <button type="submit" class="btn-red">Calcular Pieza</button>
         </form>
     </div>
 </body>
@@ -143,11 +142,9 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...)):
         doc = ezdxf.readfile(temp_file_path)
         msp = doc.modelspace()
         
-        # Ejemplo básico de análisis de entidades con ezdxf
         line_count = len(msp.query('LINE'))
         circle_count = len(msp.query('CIRCLE'))
         
-        # Lógica de precio simulada según complejidad y material
         precio_base = 5000
         if "3mm" in material:
             precio_base = 12000
@@ -164,30 +161,32 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...)):
     if os.path.exists(temp_file_path):
         os.remove(temp_file_path)
         
-    # Retornamos una respuesta con estilo manteniendo la misma línea visual
     return HTMLResponse(content=f"""
     <!DOCTYPE html>
     <html lang="es">
     <head>
         <meta charset="UTF-8">
-        <title>Resultado - andmax.laser</title>
+        <title>Cotización - andmax.laser</title>
         <style>
             body {{ background-color: #0b0b0b; color: #f1f1f1; font-family: sans-serif; padding: 40px; }}
             .container {{ max-width: 600px; margin: 0 auto; background: #141414; padding: 30px; border-radius: 12px; border: 1px solid #222; }}
             h2 {{ color: #ff3333; }}
             .btn-green {{ background-color: #00cc44; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; text-decoration: none; display: block; text-align: center; margin-top: 20px; }}
             .btn-green:hover {{ background-color: #00e64d; }}
+            .btn-red {{ background-color: #e60000; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; text-decoration: none; display: block; text-align: center; margin-top: 10px; }}
+            .btn-red:hover {{ background-color: #ff1a1a; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h2>Resultado de tu Cotización</h2>
+            <h2>Resultado de Cotización</h2>
             <p><strong>Archivo:</strong> {file.filename}</p>
             <p><strong>Material:</strong> {material}</p>
-            <p><strong>Líneas detectadas:</strong> {line_count}</p>
-            <p><strong>Círculos detectados:</strong> {circle_count}</p>
-            <h3 style="color: #00cc44;">Precio Total: ${total:,.2f} ARS</h3>
-            <a href="/" style="color: #ff3333; text-decoration: none;">← Volver al cotizador</a>
+            <p><strong>Elementos detectados:</strong> {line_count} líneas, {circle_count} círculos</p>
+            <h3 style="color: #00cc44;">Subtotal: ${total:,.2f} ARS</h3>
+            
+            <button class="btn-green">Agregar al Carrito</button>
+            <a href="/" class="btn-red">Volver / Cotizar otro archivo</a>
         </div>
     </body>
     </html>
@@ -197,7 +196,6 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...)):
 async def mercado_pago_webhook(request: Request):
     data = await request.json()
     
-    # Manejo de notificaciones de Mercado Pago
     if data.get("type") == "payment":
         payment_id = data.get("data", {}).get("id")
         payment_info = sdk.payment().get(payment_id)
@@ -206,12 +204,11 @@ async def mercado_pago_webhook(request: Request):
             payment_status = payment_info["response"].get("status")
             
             if payment_status == "approved":
-                # Lógica de envío de correo por Resend al aprobarse el pago
                 params = {
                     "from": "andmax.laser <onboarding@resend.dev>",
-                    "to": ["tucorreo@example.com"], # O el email del cliente obtenido del pago
-                    "subject": "¡Pago Aprobado - Pedido en proceso!",
-                    "html": "<strong>¡Tu pago ha sido aprobado con éxito! Ya estamos procesando tus cortes.</strong>"
+                    "to": ["tucorreo@example.com"],
+                    "subject": "¡Nuevo Pago Aprobado - andmax.laser!",
+                    "html": "<strong>Se ha aprobado un pago en la plataforma. Proceder con los cortes láser.</strong>"
                 }
                 resend.Emails.send(params)
                 
