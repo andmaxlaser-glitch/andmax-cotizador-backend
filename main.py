@@ -1,708 +1,218 @@
 import os
-import re
-import time
-import uuid
-import shutil
-import math
-from threading import Lock
-import requests
-from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+import ezdxf
+from fastapi import FastAPI, File, UploadFile, Form, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import mercadopago
-import ezdxf
-from ezdxf import path
+import resend
 
 app = FastAPI()
 
-# --------------------------------------------------------------------------
-# Rutas del Proyecto y Archivos Estáticos
-# --------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(BASE_DIR)
+# Configuración de credenciales (usando variables de entorno o valores por defecto)
+MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "TU_ACCESS_TOKEN_DE_MERCADOPAGO")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "TU_API_KEY_DE_RESEND")
 
-RUTAS_FRONTEND_POSIBLES = [
-    os.path.join(PROJECT_ROOT, "frontend"),
-    os.path.join(BASE_DIR, "frontend"),
-    os.path.join(PROJECT_ROOT, "Frontend"),
-    os.path.join(BASE_DIR, "Frontend"),
-]
+sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+resend.api_key = RESEND_API_KEY
 
-FRONTEND_DIR = None
-for ruta in RUTAS_FRONTEND_POSIBLES:
-    if os.path.exists(ruta):
-        FRONTEND_DIR = ruta
-        break
+# Interfaz visual (HTML + CSS embebido con fondo negro, botones rojos y verde para carrito)
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cotizador Láser - andmax.laser</title>
+    <style>
+        body {
+            background-color: #0b0b0b;
+            color: #f1f1f1;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #141414;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(255, 0, 0, 0.15);
+            border: 1px: #222;
+        }
+        h1 {
+            color: #ff3333;
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        .upload-box {
+            border: 2px dashed #ff3333;
+            padding: 25px;
+            text-align: center;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            background: #1a1a1a;
+        }
+        input[type="file"], select {
+            background: #222;
+            color: #fff;
+            padding: 10px;
+            border: 1px solid #444;
+            border-radius: 5px;
+            width: 100%;
+            margin-top: 10px;
+            box-sizing: border-box;
+        }
+        button.btn-red {
+            background-color: #e60000;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            font-weight: bold;
+            margin-top: 15px;
+            transition: background 0.3s;
+        }
+        button.btn-red:hover {
+            background-color: #ff1a1a;
+        }
+        button.btn-green {
+            background-color: #00cc44;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            font-weight: bold;
+            margin-top: 15px;
+            transition: background 0.3s;
+        }
+        button.btn-green:hover {
+            background-color: #00e64d;
+        }
+        .result-box {
+            margin-top: 25px;
+            background: #1a1a1a;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #ff3333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>andmax.laser - Cotizador Automático</h1>
+        <form action="/cotizar" method="post" enctype="multipart/form-data">
+            <div class="upload-box">
+                <label for="file">Subí tu archivo CAD (DXF):</label>
+                <input type="file" name="file" accept=".dxf" required>
+            </div>
+            
+            <label for="material">Material y Espesor:</label>
+            <select name="material" id="material">
+                <option value="inox_316_1mm">Acero Inoxidable 316/L - 1 mm</option>
+                <option value="inox_316_2mm">Acero Inoxidable 316/L - 2 mm</option>
+                <option value="inox_316_3mm">Acero Inoxidable 316/L - 3 mm</option>
+            </select>
 
-static_dir = None
-if FRONTEND_DIR and os.path.exists(os.path.join(FRONTEND_DIR, "static")):
-    static_dir = os.path.join(FRONTEND_DIR, "static")
-elif os.path.exists(os.path.join(BASE_DIR, "static")):
-    static_dir = os.path.join(BASE_DIR, "static")
-
-if static_dir and os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-# --------------------------------------------------------------------------
-# CORS
-# --------------------------------------------------------------------------
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
-sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
-
-RESEND_API_KEY = os.getenv("RESEND_API_KEY")
-EMAIL_DESTINO = os.getenv("EMAIL_DESTINO", "andmax.laser@gmail.com")
-
-TEMP_DIR = "/tmp/dxf_storage"
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB
-ALLOWED_EXTENSIONS = {".dxf"}
-
-QUOTES: dict[str, dict] = {}
-QUOTES_LOCK = Lock()
-QUOTE_TTL_SECONDS = 60 * 60 * 2  # 2 horas
-
-
-def _limpiar_cotizaciones_viejas():
-    ahora = time.time()
-    with QUOTES_LOCK:
-        vencidas = [qid for qid, q in QUOTES.items() if ahora - q["created_at"] > QUOTE_TTL_SECONDS]
-        for qid in vencidas:
-            filepath = QUOTES[qid].get("filepath")
-            if filepath and os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                except OSError:
-                    pass
-            QUOTES.pop(qid, None)
-
-
-def nombre_archivo_seguro(filename: str) -> str:
-    base = os.path.basename(filename or "archivo.dxf")
-    base = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
-    if not base.lower().endswith(".dxf"):
-        base += ".dxf"
-    return f"{uuid.uuid4().hex}_{base}"
-
-
-def generar_svg_preview(doc, msp) -> str:
-    try:
-        paths_data = []
-        all_points_x = []
-        all_points_y = []
-
-        def extraer_de_contenedor(entidades):
-            for entity in entidades:
-                dxftype = entity.dxftype()
-                if dxftype == 'INSERT':
-                    try:
-                        if hasattr(entity, 'virtual_entities'):
-                            extraer_de_contenedor(entity.virtual_entities())
-                    except Exception:
-                        pass
-                    continue
-
-                try:
-                    p = path.make_path(entity)
-                    d_str = path.to_svg_path_data([p])
-                    if d_str and d_str.strip():
-                        paths_data.append(d_str)
-                        for pt in p.control_points():
-                            all_points_x.append(float(pt[0]))
-                            all_points_y.append(float(pt[1]))
-                except Exception:
-                    pass
-
-                try:
-                    if dxftype == 'LINE':
-                        s, e = entity.dxf.start, entity.dxf.end
-                        all_points_x.extend([s.x, e.x])
-                        all_points_y.extend([s.y, e.y])
-                        paths_data.append(f"M {s.x:.2f} {s.y:.2f} L {e.x:.2f} {e.y:.2f}")
-                    elif dxftype == 'CIRCLE':
-                        c, r = entity.dxf.center, entity.dxf.radius
-                        all_points_x.extend([c.x - r, c.x + r])
-                        all_points_y.extend([c.y - r, c.y + r])
-                        paths_data.append(f"M {c.x - r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x + r:.2f} {c.y:.2f} A {r:.2f} {r:.2f} 0 1 0 {c.x - r:.2f} {c.y:.2f}")
-                    elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
-                        puntos = list(entity.get_points(format='xy'))
-                        if puntos:
-                            pts_str = []
-                            for idx, pt in enumerate(puntos):
-                                px, py = float(pt[0]), float(pt[1])
-                                all_points_x.append(px)
-                                all_points_y.append(py)
-                                prefix = "M" if idx == 0 else "L"
-                                pts_str.append(f"{prefix} {px:.2f} {py:.2f}")
-                            if getattr(entity, 'closed', False):
-                                pts_str.append("Z")
-                            paths_data.append(" ".join(pts_str))
-                except Exception:
-                    continue
-
-        extraer_de_contenedor(msp)
-        for block in doc.blocks:
-            if not block.name.startswith('*'):
-                extraer_de_contenedor(block)
-
-        if not all_points_x or not all_points_y:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Sin geometrías compatibles para vista previa</p>"
-
-        min_x, max_x = min(all_points_x), max(all_points_x)
-        min_y, max_y = min(all_points_y), max(all_points_y)
-
-        width = max_x - min_x
-        height = max_y - min_y
-
-        if width <= 0 or height <= 0:
-            return "<p style='color:#a0a0a0; font-size:12px;'>Dimensiones inválidas para renderizado</p>"
-
-        margin = max(width, height) * 0.10
-        vb_x = min_x - margin
-        vb_y = min_y - margin
-        vb_w = width + (margin * 2)
-        vb_h = height + (margin * 2)
-
-        stroke_width = max(max(width, height) / 220.0, 0.4)
-
-        paths_svg = [
-            f'<path d="{d}" stroke="#e63946" stroke-width="{stroke_width:.2f}" fill="none" stroke-linecap="round" stroke-linejoin="round" />'
-            for d in paths_data
-        ]
-
-        center_y = min_y + max_y
-
-        return f'''<svg viewBox="{vb_x:.2f} {vb_y:.2f} {vb_w:.2f} {vb_h:.2f}" 
-            xmlns="http://www.w3.org/2000/svg" 
-            style="width: 100%; height: 280px; background-color: #0d0d0d; border-radius: 6px; display: block;"
-            preserveAspectRatio="xMidYMid meet">
-            <g transform="translate(0, {center_y:.2f}) scale(1, -1)">
-                {''.join(paths_svg)}
-            </g>
-        </svg>'''
-
-    except Exception as e:
-        print(f"Error generando SVG: {e}")
-        return "<p style='color:#a0a0a0; font-size:12px;'>Vista previa no disponible</p>"
-
-
-def enviar_email_notificacion_carrito(email_cliente: str, items_info: list, monto_total: str):
-    if not RESEND_API_KEY:
-        print("Error: RESEND_API_KEY no está configurada.")
-        return
-
-    envio_info = items_info[0].get("datos_envio_cliente", {}) if items_info else {}
-
-    detalle_items_texto = ""
-    for idx, item in enumerate(items_info, 1):
-        detalle_items_texto += f"""
---- ITEM {idx} ---
-• Archivo: {item['original_filename']}
-• Material: {item['material'].upper()}
-• Espesor: {item['espesor']} mm
-• Metros de corte: {item['metros_corte']} m
-• Piercings: {item['piercings']}
-• Subtotal: ${item['total_estimado']}
+            <button type="submit" class="btn-red">Calcular Cotización</button>
+        </form>
+    </div>
+</body>
+</html>
 """
 
-    contenido_texto = f"""¡Hola! Se ha confirmado un nuevo pago en el sistema.
-
-==============================================
-DATOS DE CONTACTO Y ENVÍO
-==============================================
-• Email de Pago: {email_cliente}
-• Nombre: {envio_info.get('nombre', 'No especificado')}
-• Teléfono: {envio_info.get('telefono', 'No especificado')}
-• Tipo de Entrega: {envio_info.get('tipo', 'retiro').upper()}
-• Dirección: {envio_info.get('direccion', '-')}
-• Localidad: {envio_info.get('localidad', '-')}
-• Código Postal: {envio_info.get('cp', '-')}
-
-==============================================
-DETALLE DE LAS PIEZAS
-==============================================
-{detalle_items_texto}
-==============================================
-Monto Total Abonado: ${monto_total}
-"""
-
-    import base64
-    attachments = []
-    for item in items_info:
-        filepath = item.get("filepath")
-        if filepath and os.path.exists(filepath):
-            with open(filepath, 'rb') as f:
-                file_bytes = f.read()
-                b64_content = base64.b64encode(file_bytes).decode('utf-8')
-                attachments.append({
-                    "filename": item['original_filename'],
-                    "content": b64_content
-                })
-
-    headers = {
-        "Authorization": f"Bearer {RESEND_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    # Resend por defecto permite enviar desde onboarding@resend.dev para pruebas inmediatas
-    data = {
-        "from": "ANDMAX Laser <onboarding@resend.dev>",
-        "to": [EMAIL_DESTINO],
-        "subject": f"⚡ NUEVO PEDIDO PAGADO ({len(items_info)} archivos) - ANDMAX",
-        "text": contenido_texto,
-        "attachments": attachments
-    }
-
-    try:
-        response = requests.post("https://api.resend.com/emails", json=data, headers=headers)
-        if response.status_code not in [200, 201]:
-            print(f"Error enviando correo con Resend: {response.text}")
-        else:
-            print("Correo enviado exitosamente vía Resend.")
-    except Exception as e:
-        print(f"Error de conexión con Resend: {e}")
-
-
-def obtener_precio_metro_y_material(material_input: str, espesor_input: str) -> tuple[float, float]:
-    TARIFAS_CORTE = {
-        "mdf": {1.0: 600.0, 2.0: 700.0, 3.0: 800.0, 5.0: 900.0, 8.0: 1000.0, 10.0: 1200.0},
-        "acrilico": {1.0: 800.0, 2.0: 900.0, 3.0: 1000.0, 4.0: 1100.0, 5.0: 1200.0, 6.0: 1400.0, 8.0: 1600.0, 10.0: 1800.0},
-        "acero_carbono": {1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0},
-        "acero_inoxidable": {1.0: 9500.0, 2.0: 11500.0, 3.0: 14945.0, 4.0: 16500.0, 5.0: 18500.0, 6.0: 17934.0, 8.0: 21000.0, 10.0: 24000.0, 12.0: 27000.0},
-        "aluminio": {1.0: 8500.0, 2.0: 9350.0, 3.0: 10285.0, 4.0: 11313.0, 5.0: 12444.0, 6.0: 13689.0, 8.0: 15058.0, 10.0: 16564.0, 12.0: 18220.0}
-    }
-
-    COSTOS_MATERIAL_BASE = {
-        "mdf": 800.0,
-        "acrilico": 1200.0,
-        "acero_carbono": 3500.0,
-        "acero_inoxidable": 6500.0,
-        "aluminio": 4500.0
-    }
-
-    mat_str = str(material_input).lower().strip()
-    if "inox" in mat_str: mat_key = "acero_inoxidable"
-    elif "carbono" in mat_str or "hierro" in mat_str: mat_key = "acero_carbono"
-    elif "acril" in mat_str: mat_key = "acrilico"
-    elif "alum" in mat_str: mat_key = "aluminio"
-    else: mat_key = "mdf"
-
-    raw_esp = str(espesor_input).replace(",", ".").strip()
-    esp_clean = "".join([c for c in raw_esp if c.isdigit() or c == '.'])
-    try: 
-        espesor_val = float(esp_clean)
-    except ValueError: 
-        espesor_val = 3.0
-
-    tarifas_mat = TARIFAS_CORTE[mat_key]
-    if espesor_val in tarifas_mat: 
-        precio_corte = tarifas_mat[espesor_val]
-    else:
-        espesores = sorted(tarifas_mat.keys())
-        precio_corte = tarifas_mat[espesores[-1]]
-        for esp in espesores:
-            if esp >= espesor_val: 
-                precio_corte = tarifas_mat[esp]
-                break
-
-    precio_material = COSTOS_MATERIAL_BASE[mat_key] * (espesor_val / 3.0)
-    
-    return float(precio_corte), float(round(precio_material, 2))
-
-
-def calcular_cotizacion(filepath: str, material: str, espesor: str, incluye_material: bool) -> dict:
-    doc = ezdxf.readfile(filepath)
-    msp = doc.modelspace()
-
-    total_length_mm = 0.0
-    all_points_x = []
-    all_points_y = []
-    entidades_geom = []
-    ENTIDADES_CORTE = {'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'SPLINE', 'ELLIPSE'}
-
-    def extraer_entidades(entidades):
-        nonlocal total_length_mm
-        for entity in entidades:
-            dxftype = entity.dxftype()
-            if dxftype == 'INSERT':
-                try:
-                    if hasattr(entity, 'virtual_entities'):
-                        extraer_entidades(entity.virtual_entities())
-                except Exception:
-                    pass
-                continue
-
-            if dxftype not in ENTIDADES_CORTE:
-                continue
-
-            try:
-                length = 0.0
-                pts = []
-                is_closed = False
-
-                if dxftype == 'LINE':
-                    s, e = entity.dxf.start, entity.dxf.end
-                    length = s.distance(e)
-                    pts = [(float(s.x), float(s.y)), (float(e.x), float(e.y))]
-                elif dxftype == 'CIRCLE':
-                    c, r = entity.dxf.center, entity.dxf.radius
-                    length = 2 * math.pi * r
-                    pts = [(float(c.x - r), float(c.y)), (float(c.x + r), float(c.y)), (float(c.x), float(c.y - r)), (float(c.x), float(c.y + r))]
-                    is_closed = True
-                elif dxftype in ('LWPOLYLINE', 'POLYLINE'):
-                    puntos = list(entity.get_points(format='xy'))
-                    length = 0.0
-                    for idx, pt in enumerate(puntos):
-                        px, py = float(pt[0]), float(pt[1])
-                        pts.append((px, py))
-                        if idx > 0:
-                            length += math.hypot(px - pts[idx-1][0], py - pts[idx-1][1])
-                    is_closed = getattr(entity, 'closed', False)
-                    if not is_closed and len(pts) > 2:
-                        is_closed = math.isclose(pts[0][0], pts[-1][0], abs_tol=1e-2) and math.isclose(pts[0][1], pts[-1][1], abs_tol=1e-2)
-                elif dxftype == 'ARC':
-                    c, r = entity.dxf.center, entity.dxf.radius
-                    sw = math.radians(entity.dxf.end_angle) - math.radians(entity.dxf.start_angle)
-                    if sw < 0: sw += 2 * math.pi
-                    length = r * sw
-                    pts = [(float(c.x - r), float(c.y)), (float(c.x + r), float(c.y))]
-                else:
-                    p = path.make_path(entity)
-                    length = path.length(p)
-                    control_pts = list(p.control_points())
-                    if control_pts:
-                        pts = [(float(pt[0]), float(pt[1])) for pt in control_pts]
-                    try:
-                        is_closed = p.is_closed()
-                    except Exception:
-                        pass
-
-                if length > 0 or pts:
-                    total_length_mm += length
-                    for px, py in pts:
-                        all_points_x.append(px)
-                        all_points_y.append(py)
-                    
-                    cx = sum(p[0] for p in pts) / len(pts) if pts else 0.0
-                    cy = sum(p[1] for p in pts) / len(pts) if pts else 0.0
-                    entidades_geom.append({
-                        "type": dxftype,
-                        "center": (cx, cy),
-                        "is_closed": is_closed,
-                        "length": length
-                    })
-            except Exception:
-                pass
-
-    extraer_entidades(msp)
-    for block in doc.blocks:
-        if not block.name.startswith('*'):
-            extraer_entidades(block)
-
-    if not all_points_x or not all_points_y:
-        try:
-            extmin = doc.header.get('$EXTMIN')
-            extmax = doc.header.get('$EXTMAX')
-            if extmin and extmax:
-                all_points_x = [float(extmin[0]), float(extmax[0])]
-                all_points_y = [float(extmin[1]), float(extmax[1])]
-        except Exception:
-            pass
-
-    if all_points_x and all_points_y:
-        ancho_pieza = round(max(all_points_x) - min(all_points_x), 2)
-        alto_pieza = round(max(all_points_y) - min(all_points_y), 2)
-    else:
-        ancho_pieza, alto_pieza = 0.0, 0.0
-
-    componentes = []
-    tolerancia_agrupamiento = 15.0
-
-    for ent in entidades_geom:
-        c_ent = ent["center"]
-        encontrado = False
-        for comp in componentes:
-            if any(math.hypot(c_ent[0] - e["center"][0], c_ent[1] - e["center"][1]) < tolerancia_agrupamiento for e in comp):
-                comp.append(ent)
-                encontrado = True
-                break
-        if not encontrado:
-            componentes.append([ent])
-
-    piezas_detectadas = max(1, len(componentes))
-    perforaciones_detectadas = sum(1 for e in entidades_geom if e["is_closed"] or e["type"] in ('CIRCLE', 'ARC'))
-    perforaciones_detectadas = max(1, perforaciones_detectadas)
-
-    metros_corte = round(total_length_mm / 1000.0, 2)
-    precio_metro, costo_mat_unitario = obtener_precio_metro_y_material(material, espesor)
-
-    PRECIO_PIERCING = 50.0
-    COSTO_SETUP = 1500.0
-
-    costo_mecanizado = round((metros_corte * precio_metro) + (perforaciones_detectadas * PRECIO_PIERCING), 2)
-    costo_material = round(metros_corte * costo_mat_unitario, 2) if incluye_material else 0.0
-    total_estimado = round(costo_mecanizado + costo_material + COSTO_SETUP, 2)
-
-    if math.isnan(total_estimado) or math.isinf(total_estimado) or total_estimado <= 0:
-        raise ValueError("El cálculo de la cotización generó un valor inválido.")
-
-    svg_preview = generar_svg_preview(doc, msp)
-
-    return {
-        "metros_corte": metros_corte,
-        "piercings": perforaciones_detectadas,
-        "ancho_mm": ancho_pieza,
-        "alto_mm": alto_pieza,
-        "piezas_detectadas": piezas_detectadas,
-        "precio_metro_aplicado": precio_metro,
-        "costo_mecanizado": costo_mecanizado,
-        "costo_material": costo_material,
-        "costo_setup": COSTO_SETUP,
-        "total_estimado": total_estimado,
-        "svg_preview": svg_preview,
-    }
-
-
-@app.get("/")
-async def read_root():
-    posibles_html = [
-        os.path.join(PROJECT_ROOT, "frontend", "index.html"),
-        os.path.join(BASE_DIR, "frontend", "index.html"),
-        os.path.join(PROJECT_ROOT, "Frontend", "index.html"),
-        os.path.join(BASE_DIR, "Frontend", "index.html"),
-        os.path.join(BASE_DIR, "index.html"),
-        os.path.join(PROJECT_ROOT, "index.html")
-    ]
-
-    for html_path in posibles_html:
-        if os.path.exists(html_path):
-            return FileResponse(html_path)
-
-    return {
-        "status": "Cotizador API ANDMAX Laser activo",
-        "error": "No se encontró index.html"
-    }
-
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return HTML_TEMPLATE
 
 @app.post("/cotizar")
-async def cotizar(
-    file: UploadFile = File(...),
-    material: str = Form("mdf"),
-    espesor: str = Form("3"),
-    incluye_material: bool = Form(True)
-):
-    _limpiar_cotizaciones_viejas()
-
-    original_filename = file.filename or "archivo.dxf"
-    if not original_filename.lower().endswith(".dxf"):
-        raise HTTPException(status_code=400, detail="Solo se aceptan archivos .dxf")
-
-    safe_name = nombre_archivo_seguro(original_filename)
-    temp_filepath = os.path.join(TEMP_DIR, safe_name)
-
-    size = 0
-    with open(temp_filepath, "wb") as buffer:
-        while chunk := await file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_FILE_SIZE_BYTES:
-                buffer.close()
-                os.remove(temp_filepath)
-                raise HTTPException(status_code=413, detail="Archivo demasiado grande (máx. 15MB)")
-            buffer.write(chunk)
-
-    try:
-        resultado = calcular_cotizacion(temp_filepath, material, espesor, incluye_material)
-    except HTTPException:
-        raise
-    except Exception as e:
-        if os.path.exists(temp_filepath):
-            os.remove(temp_filepath)
-        raise HTTPException(status_code=400, detail=f"No se pudo procesar el archivo DXF: {str(e)}")
-
-    quote_id = uuid.uuid4().hex
-    with QUOTES_LOCK:
-        QUOTES[quote_id] = {
-            "created_at": time.time(),
-            "filepath": temp_filepath,
-            "original_filename": original_filename,
-            "material": material,
-            "espesor": espesor,
-            "incluye_material": incluye_material,
-            "total_estimado": resultado["total_estimado"],
-            "metros_corte": resultado["metros_corte"],
-            "piercings": resultado["piercings"],
-            "used": False,
-        }
-
-    return {
-        "quote_id": quote_id,
-        "archivo": original_filename,
-        **resultado,
-        "material": material,
-        "espesor": espesor,
-    }
-
-
-@app.post("/crear_pago")
-async def crear_pago(quote_id: str = Form(...)):
-    return await crear_pago_carrito(item_ids=quote_id, tipo_envio="retiro")
-
-
-@app.post("/crear_pago_carrito")
-async def crear_pago_carrito(
-    item_ids: str = Form(...),
-    tipo_envio: str = Form("retiro"),
-    nombre_envio: str = Form(""),
-    telefono_envio: str = Form(""),
-    direccion_envio: str = Form(""),
-    localidad_envio: str = Form(""),
-    cp_envio: str = Form("")
-):
-    if not sdk:
-        raise HTTPException(status_code=500, detail="Mercado Pago SDK no inicializado")
-
-    ids_list = [i.strip() for i in item_ids.split(",") if i.strip()]
-    if not ids_list:
-        raise HTTPException(status_code=400, detail="El carrito está vacío.")
-
-    items_mp = []
-    filepaths_asociados = []
+async def cotizar(file: UploadFile = File(...), material: str = Form(...)):
+    contents = await file.read()
+    temp_file_path = f"temp_{file.filename}"
     
-    with QUOTES_LOCK:
-        for qid in ids_list:
-            quote = QUOTES.get(qid)
-            if not quote:
-                raise HTTPException(status_code=404, detail="Una de las cotizaciones expiró o no existe.")
-            if quote["used"]:
-                raise HTTPException(status_code=409, detail=f"El archivo {quote['original_filename']} ya fue procesado.")
+    with open(temp_file_path, "wb") as f:
+        f.write(contents)
+        
+    try:
+        doc = ezdxf.readfile(temp_file_path)
+        msp = doc.modelspace()
+        
+        # Ejemplo básico de análisis de entidades con ezdxf
+        line_count = len(msp.query('LINE'))
+        circle_count = len(msp.query('CIRCLE'))
+        
+        # Lógica de precio simulada según complejidad y material
+        precio_base = 5000
+        if "3mm" in material:
+            precio_base = 12000
+        elif "2mm" in material:
+            precio_base = 8500
             
-            items_mp.append({
-                "title": f"Corte: {quote['original_filename']} ({quote['material']} {quote['espesor']}mm)",
-                "quantity": 1,
-                "currency_id": "ARS",
-                "unit_price": float(quote["total_estimado"])
-            })
-            filepaths_asociados.append(qid)
-
-    costo_envio = 0.0
-    titulo_envio = ""
-    texto_envio_resumen = "Retira por el local"
-
-    if tipo_envio == "local":
-        costo_envio = 5000.0
-        titulo_envio = "Envío Local / GBA"
-        texto_envio_resumen = f"Envío Local | Dir: {direccion_envio}, {localidad_envio} (CP: {cp_envio})"
-    elif tipo_envio == "correo":
-        costo_envio = 12000.0
-        titulo_envio = "Envío al Interior - Correo Argentino"
-        texto_envio_resumen = f"Correo Argentino | Dir: {direccion_envio}, {localidad_envio} (CP: {cp_envio})"
-
-    if costo_envio > 0:
-        items_mp.append({
-            "title": titulo_envio,
-            "quantity": 1,
-            "currency_id": "ARS",
-            "unit_price": costo_envio
-        })
-
-    cart_reference_id = ",".join(filepaths_asociados)
-
-    preference_data = {
-        "items": items_mp,
-        "external_reference": cart_reference_id,
-        "notification_url": "https://andmax-cotizador-api.onrender.com/webhook"
-    }
-
-    try:
-        preference_response = sdk.preference().create(preference_data)
+        total = precio_base + (line_count * 10) + (circle_count * 15)
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al conectar con la pasarela de pagos: {str(e)}")
-
-    if preference_response.get("status") not in [200, 201]:
-        raise HTTPException(status_code=400, detail="Error al crear la preferencia de pago")
-
-    preference = preference_response["response"]
-    
-    with QUOTES_LOCK:
-        for qid in filepaths_asociados:
-            QUOTES[qid]["used"] = True
-            QUOTES[qid]["datos_envio_cliente"] = {
-                "tipo": tipo_envio,
-                "nombre": nombre_envio,
-                "telefono": telefono_envio,
-                "direccion": direccion_envio,
-                "localidad": localidad_envio,
-                "cp": cp_envio,
-                "resumen": texto_envio_resumen
-            }
-
-    return {"init_point": preference["init_point"]}
-
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        raise HTTPException(status_code=400, detail=f"Error al procesar el archivo DXF: {str(e)}")
+        
+    if os.path.exists(temp_file_path):
+        os.remove(temp_file_path)
+        
+    # Retornamos una respuesta con estilo manteniendo la misma línea visual
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <title>Resultado - andmax.laser</title>
+        <style>
+            body {{ background-color: #0b0b0b; color: #f1f1f1; font-family: sans-serif; padding: 40px; }}
+            .container {{ max-width: 600px; margin: 0 auto; background: #141414; padding: 30px; border-radius: 12px; border: 1px solid #222; }}
+            h2 {{ color: #ff3333; }}
+            .btn-green {{ background-color: #00cc44; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; text-decoration: none; display: block; text-align: center; margin-top: 20px; }}
+            .btn-green:hover {{ background-color: #00e64d; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Resultado de tu Cotización</h2>
+            <p><strong>Archivo:</strong> {file.filename}</p>
+            <p><strong>Material:</strong> {material}</p>
+            <p><strong>Líneas detectadas:</strong> {line_count}</p>
+            <p><strong>Círculos detectados:</strong> {circle_count}</p>
+            <h3 style="color: #00cc44;">Precio Total: ${total:,.2f} ARS</h3>
+            <a href="/" style="color: #ff3333; text-decoration: none;">← Volver al cotizador</a>
+        </div>
+    </body>
+    </html>
+    """)
 
 @app.post("/webhook")
-async def webhook(request: Request):
-    query_params = request.query_params
-    topic = query_params.get("topic") or query_params.get("type")
+async def mercado_pago_webhook(request: Request):
+    data = await request.json()
     
-    print(f"Webhook recibido - Topic: {topic}, Params: {query_params}")
-
-    payment_id = None
-    if topic == "payment":
-        payment_id = query_params.get("id") or query_params.get("data.id")
-    elif topic == "merchant_order":
-        order_id = query_params.get("id") or query_params.get("data.id")
-        if order_id and sdk:
-            try:
-                order_response = sdk.merchant_order().get(order_id)
-                order_info = order_response.get("response", {})
-                payments = order_info.get("payments", [])
-                for pay in payments:
-                    if pay.get("status") == "approved":
-                        payment_id = pay.get("id")
-                        break
-            except Exception as e:
-                print(f"Error consultando merchant_order: {e}")
-
-    if payment_id and sdk:
-        try:
-            payment_response = sdk.payment().get(payment_id)
-            payment_info = payment_response.get("response", {})
-
-            if payment_info.get("status") == "approved":
-                external_ref = payment_info.get("external_reference", "")
-                monto_total = str(payment_info.get("transaction_amount", "0"))
-                email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
-
-                quote_ids = [qid.strip() for qid in external_ref.split(",") if qid.strip()]
+    # Manejo de notificaciones de Mercado Pago
+    if data.get("type") == "payment":
+        payment_id = data.get("data", {}).get("id")
+        payment_info = sdk.payment().get(payment_id)
+        
+        if payment_info["status"] == 200:
+            payment_status = payment_info["response"].get("status")
+            
+            if payment_status == "approved":
+                # Lógica de envío de correo por Resend al aprobarse el pago
+                params = {
+                    "from": "andmax.laser <onboarding@resend.dev>",
+                    "to": ["tucorreo@example.com"], # O el email del cliente obtenido del pago
+                    "subject": "¡Pago Aprobado - Pedido en proceso!",
+                    "html": "<strong>¡Tu pago ha sido aprobado con éxito! Ya estamos procesando tus cortes.</strong>"
+                }
+                resend.Emails.send(params)
                 
-                items_encontrados = []
-                with QUOTES_LOCK:
-                    for qid in quote_ids:
-                        quote = QUOTES.get(qid)
-                        if quote:
-                            items_encontrados.append(quote)
-
-                if items_encontrados:
-                    print(f"Procesando envío de correo para {len(items_encontrados)} ítems...")
-                    enviar_email_notificacion_carrito(
-                        email_cliente=email_cliente,
-                        items_info=items_encontrados,
-                        monto_total=monto_total
-                    )
-                else:
-                    print(f"Aviso: No se encontraron cotizaciones para el external_ref: {external_ref}")
-        except Exception as e:
-            print(f"Error procesando webhook de pago: {e}")
-
-    return {"status": "ok"}
+    return JSONResponse(content={"status": "ok"}, status_code=200)
