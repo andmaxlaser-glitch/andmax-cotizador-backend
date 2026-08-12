@@ -654,35 +654,55 @@ async def crear_pago_carrito(
 async def webhook(request: Request):
     query_params = request.query_params
     topic = query_params.get("topic") or query_params.get("type")
+    
+    print(f"Webhook recibido - Topic: {topic}, Params: {query_params}")
 
+    payment_id = None
     if topic == "payment":
         payment_id = query_params.get("id") or query_params.get("data.id")
-        if payment_id and sdk:
+    elif topic == "merchant_order":
+        order_id = query_params.get("id") or query_params.get("data.id")
+        if order_id and sdk:
             try:
-                payment_response = sdk.payment().get(payment_id)
-                payment_info = payment_response.get("response", {})
-
-                if payment_info.get("status") == "approved":
-                    external_ref = payment_info.get("external_reference", "")
-                    monto_total = str(payment_info.get("transaction_amount", "0"))
-                    email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
-
-                    quote_ids = [qid.strip() for qid in external_ref.split(",") if qid.strip()]
-                    
-                    items_encontrados = []
-                    with QUOTES_LOCK:
-                        for qid in quote_ids:
-                            quote = QUOTES.get(qid)
-                            if quote:
-                                items_encontrados.append(quote)
-
-                    if items_encontrados:
-                        enviar_email_notificacion_carrito(
-                            email_cliente=email_cliente,
-                            items_info=items_encontrados,
-                            monto_total=monto_total
-                        )
+                order_response = sdk.merchant_order().get(order_id)
+                order_info = order_response.get("response", {})
+                payments = order_info.get("payments", [])
+                for pay in payments:
+                    if pay.get("status") == "approved":
+                        payment_id = pay.get("id")
+                        break
             except Exception as e:
-                print(f"Error procesando webhook de pago: {e}")
+                print(f"Error consultando merchant_order: {e}")
+
+    if payment_id and sdk:
+        try:
+            payment_response = sdk.payment().get(payment_id)
+            payment_info = payment_response.get("response", {})
+
+            if payment_info.get("status") == "approved":
+                external_ref = payment_info.get("external_reference", "")
+                monto_total = str(payment_info.get("transaction_amount", "0"))
+                email_cliente = payment_info.get("payer", {}).get("email", "No especificado")
+
+                quote_ids = [qid.strip() for qid in external_ref.split(",") if qid.strip()]
+                
+                items_encontrados = []
+                with QUOTES_LOCK:
+                    for qid in quote_ids:
+                        quote = QUOTES.get(qid)
+                        if quote:
+                            items_encontrados.append(quote)
+
+                if items_encontrados:
+                    print(f"Procesando envío de correo para {len(items_encontrados)} ítems...")
+                    enviar_email_notificacion_carrito(
+                        email_cliente=email_cliente,
+                        items_info=items_encontrados,
+                        monto_total=monto_total
+                    )
+                else:
+                    print(f"Aviso: No se encontraron cotizaciones para el external_ref: {external_ref}")
+        except Exception as e:
+            print(f"Error procesando webhook de pago: {e}")
 
     return {"status": "ok"}
