@@ -13,7 +13,6 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "TU_API_KEY_DE_RESEND")
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 resend.api_key = RESEND_API_KEY
 
-# Interfaz principal con carrito interactivo, visor, materiales y opciones de envío (Retiro / Correo)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
@@ -275,7 +274,6 @@ HTML_TEMPLATE = """
                 `;
             });
             
-            // Sumar envío si está seleccionado
             const shippingCost = document.getElementById('correo').checked ? 5000 : 0;
             const totalGeneral = subtotal + shippingCost;
             
@@ -328,8 +326,15 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         doc = ezdxf.readfile(temp_file_path)
         msp = doc.modelspace()
         
+        # Conteo de entidades y cálculo de perforaciones / pinchazos (piercing)
         line_count = len(msp.query('LINE'))
         circle_count = len(msp.query('CIRCLE'))
+        arc_count = len(msp.query('ARC'))
+        lwpolyline_count = len(msp.query('LWPOLYLINE'))
+        
+        # Cada elemento independiente o contorno suele requerir un "pinchazo" (piercing) inicial del láser
+        # Estimamos los pinchazos totales sumando círculos, arcos y polilíneas/bloques principales
+        pinchazos_count = circle_count + arc_count + lwpolyline_count + max(1, int(line_count / 10))
         
         min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
         svg_paths = []
@@ -355,24 +360,39 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             
             view_box_str = f"{min_x - padding} {-max_y - padding} {width_box + (padding * 2)} {height_box + (padding * 2)}"
             svg_content = f'<svg viewBox="{view_box_str}" width="100%" height="300" style="background:#000; border:1px solid #333; border-radius:5px;">' + "".join(svg_paths) + '</svg>'
+            
+            # Cálculo de la superficie que ocupa el plano (Bounding Box en unidades del CAD, ej. mm cuadrados convertidos a m2 o factor de área)
+            # Ancho y Alto en mm -> Superficie en mm2, convertida a dm2 o m2 para cotizar costo de material por superficie
+            area_mm2 = width_box * height_box
+            area_m2 = area_mm2 / 1_000_000
         else:
             svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron líneas geométricas compatibles para renderizar en el visor.</p>'
+            width_box, height_box, area_m2 = 0, 0, 0
         
-        # --- LÓGICA DE CÁLCULO DE PRECIO ANTERIOR ---
-        # 1. Factor de espesor (ej: 4000 * mm)
+        # --- NUEVA / RECUPERADA LÓGICA DE CÁLCULO ---
         factor_espesor = float(espesor.replace("mm", "").replace(" ", "").replace(",", "."))
-        precio_base = 4000 * factor_espesor
         
-        # 2. Multiplicador según el tipo de material seleccionado
+        # 1. Costo base de material por superficie ocupada (Bounding Box)
+        # Precio base por metro cuadrado según el espesor y material
+        tarifa_base_m2 = 25000 * factor_espesor
         if "Inoxidable" in material:
-            precio_base *= 1.4
+            tarifa_base_m2 *= 1.5
         elif "Aluminio" in material:
-            precio_base *= 1.3
+            tarifa_base_m2 *= 1.3
         elif "MDF" in material or "Acrílico" in material:
-            precio_base *= 0.9
+            tarifa_base_m2 *= 0.8
             
-        # 3. Costo según complejidad de la geometría (cantidades de líneas y círculos detectadas en el DXF)
-        total = precio_base + (line_count * 8) + (circle_count * 12)
+        costo_superficie = area_m2 * tarifa_base_m2
+        
+        # 2. Costo por cantidad de líneas y perforaciones de corte
+        costo_corte = (line_count * 8) + (circle_count * 12)
+        
+        # 3. Costo por cantidad de pinchazos (piercing) requeridos por el trabajo
+        precio_por_pinchazo = 150
+        costo_pinchazos = pinchazos_count * precio_por_pinchazo
+        
+        # Total sumando superficie, desarrollo de corte y pinchazos (con un mínimo de setup si la pieza es muy chica)
+        total = max(3000, costo_superficie + costo_corte + costo_pinchazos)
         
     except Exception as e:
         if os.path.exists(temp_file_path):
@@ -397,15 +417,20 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             .btn-red {{ background-color: #e60000; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; text-decoration: none; display: block; text-align: center; margin-top: 10px; }}
             .btn-red:hover {{ background-color: #ff1a1a; }}
             .visor-container {{ margin: 20px 0; text-align: center; }}
+            .details-box {{ background: #1a1a1a; padding: 15px; border-radius: 6px; margin: 15px 0; border: 1px solid #333; font-size: 14px; color: #ccc; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h2>Resultado de tu Cotización</h2>
             <p><strong>Archivo:</strong> {file.filename}</p>
-            <p><strong>Materiales configurados:</strong> Acero Inoxidable (316/L, 304), Acero al Carbono, Aluminio, MDF, Acrílico.</p>
-            <p><strong>Espesores:</strong> Desde 1 mm hasta 10 mm.</p>
-            <p><strong>Cálculo de corte:</strong> $8 por línea detectada y $12 por círculo detectado en el archivo DXF.</p>
+            <p><strong>Material:</strong> {material} | <strong>Espesor:</strong> {espesor}</p>
+            
+            <div class="details-box">
+                <p style="margin: 4px 0;">📐 <strong>Dimensiones del plano:</strong> {width_box:.1f} mm x {height_box:.1f} mm ({area_m2:.4f} m²)</p>
+                <p style="margin: 4px 0;">⚡ <strong>Pinchazos (Piercing) calculados:</strong> {pinchazos_count} un.</p>
+                <p style="margin: 4px 0;">✂️ <strong>Geometría:</strong> {line_count} líneas, {circle_count} círculos.</p>
+            </div>
             
             <div class="visor-container">
                 <p style="text-align: left; margin-bottom: 5px;"><strong>Visor DXF (Previsualización):</strong></p>
