@@ -2,8 +2,8 @@ import math
 import ezdxf
 
 def procesar_archivo_dxf(ruta_archivo):
+    print("¡ESTOY USANDO EL NUEVO ARCHIVO MODIFICADO!") # <-- Agrega esto
     doc = ezdxf.readfile(ruta_archivo)
-    msp = doc.modelspace()
     
     lineas_extraidas = []
     
