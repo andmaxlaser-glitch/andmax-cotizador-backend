@@ -605,3 +605,41 @@ def main():
 
 if __name__ == "__main__":
     main()
+    import os
+
+def procesar_carpetas_locales(directorio_raiz="."):
+    """Recorre de forma recursiva la carpeta principal y todas las subcarpetas buscando archivos DXF."""
+    print(f"\n--- Escaneando directorio: {os.path.abspath(directorio_raiz)} ---")
+    
+    # Intentamos importar los módulos locales solo cuando se ejecuta esto para evitar errores si no se usan
+    try:
+        from dxf_parser import procesar_archivo_dxf
+        from cotizador import calcular_precio
+    except ImportError:
+        print("Aviso: No se encontraron los módulos 'dxf_parser' o 'cotizador' en la ruta actual.")
+        return
+
+    encontrados = 0
+    for carpeta_actual, _, archivos in os.walk(directorio_raiz):
+        # Opcional: ignorar carpetas del sistema o entornos virtuales si las hubiera
+        if any(p in carpeta_actual for p in ['.git', '__pycache__', 'venv', '.venv']):
+            continue
+            
+        for nombre_archivo in archivos:
+            if nombre_archivo.lower().endswith(".dxf"):
+                encontrados += 1
+                ruta_completa = os.path.join(carpeta_actual, nombre_archivo)
+                print(f"\n[{encontrados}] Analizando archivo: {ruta_completa}")
+                try:
+                    datos_geometria = procesar_archivo_dxf(ruta_completa)
+                    cotizacion = calcular_precio(datos_geometria, material="Acero Inoxidable 316/L", espesor=2.0)
+                    
+                    print(f"   -> Tipo: {datos_geometria.get('tipo', 'Desconocido')}")
+                    print(f"   -> Precio cotizado: {cotizacion.get('total', 'N/D')}")
+                except Exception as e:
+                    print(f"   -> Error al procesar {nombre_archivo}: {e}")
+
+if __name__ == "__main__":
+    # Si ejecutas el archivo directamente con 'python main.py', 
+    # buscará en la carpeta actual y todas sus subcarpetas.
+    procesar_carpetas_locales(".")
