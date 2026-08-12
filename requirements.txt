@@ -5,3 +5,4 @@ ezdxf
 mercadopago
 matplotlib
 fonttools
+resend
