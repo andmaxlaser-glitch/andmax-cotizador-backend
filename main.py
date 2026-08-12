@@ -580,3 +580,25 @@ async def mercado_pago_webhook(request: Request):
                 resend.Emails.send(params)
                 
     return JSONResponse(content={"status": "ok"}, status_code=200)
+
+    from dxf_parser import procesar_archivo_dxf
+from cotizador import calcular_precio
+
+def main():
+    # Ruta de prueba de tu archivo DXF
+    ruta_dxf = "circulo.dxf" 
+    
+    print("Analizando archivo DXF...")
+    datos_geometria = procesar_archivo_dxf(ruta_dxf)
+    
+    print(f"Resultado del análisis: {datos_geometria['tipo']}")
+    
+    # Simular una cotización para acero inoxidable 316/L de 2mm
+    cotizacion = calcular_precio(datos_geometria, material="Acero Inoxidable 316/L", espesor=2.0)
+    
+    print("\n--- COTIZACIÓN FINAL ---")
+    for clave, valor in cotizacion.items():
+        print(f"{clave}: {valor}")
+
+if __name__ == "__main__":
+    main()
