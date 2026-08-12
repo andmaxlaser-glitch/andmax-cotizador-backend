@@ -13,7 +13,7 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "TU_API_KEY_DE_RESEND")
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 resend.api_key = RESEND_API_KEY
 
-# Interfaz visual actualizada: Fondo negro, botones rojos, verde para carrito, selección completa de materiales, espesores y visor SVG
+# Interfaz visual actualizada: Fondo negro, botones rojos, verde para carrito, materiales actualizados sin "Iron", y manejo robusto del visor SVG
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
@@ -117,8 +117,10 @@ HTML_TEMPLATE = """
                 <select name="material" id="material">
                     <option value="inox_316">Acero Inoxidable 316/L</option>
                     <option value="inox_304">Acero Inoxidable 304</option>
-                    <option value="carbon_steel">Acero al Carbono (Iron)</option>
+                    <option value="carbon_steel">Acero al Carbono</option>
                     <option value="aluminum">Aluminio</option>
+                    <option value="mdf">MDF</option>
+                    <option value="acrylic">Acrílico</option>
                 </select>
             </div>
 
@@ -164,22 +166,45 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         line_count = len(msp.query('LINE'))
         circle_count = len(msp.query('CIRCLE'))
         
-        # Generación simplificada de representación visual SVG básica para el visor
+        # Extracción segura de coordenadas para el visor SVG adaptándose a cualquier escala de CAD
+        min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
         svg_paths = []
+        
         for entity in msp.query('LINE'):
-            start = entity.dxf.start
-            end = entity.dxf.end
-            svg_paths.append(f'<line x1="{start.x}" y1="{-start.y}" x2="{end.x}" y2="{-end.y}" stroke="#ff3333" stroke-width="1.5"/>')
+            try:
+                start = entity.dxf.start
+                end = entity.dxf.end
+                
+                min_x = min(min_x, start.x, end.x)
+                max_x = max(max_x, start.x, end.x)
+                min_y = min(min_y, start.y, end.y)
+                max_y = max(max_y, start.y, end.y)
+                
+                # Invertimos el eje Y porque en SVG el 0,0 está arriba y en CAD abajo
+                svg_paths.append(f'<line x1="{start.x}" y1="{-start.y}" x2="{end.x}" y2="{-end.y}" stroke="#ff3333" stroke-width="2"/>')
+            except Exception:
+                continue
+
+        # Si hay rango válido de coordenadas, armamos un viewBox dinámico para que siempre se vea perfecto
+        if min_x != float('inf') and max_x != float('-inf'):
+            width_box = max_x - min_x if max_x != min_x else 100
+            height_box = max_y - min_y if max_y != min_y else 100
+            padding = max(width_box, height_box) * 0.1
+            
+            view_box_str = f"{min_x - padding} {-max_y - padding} {width_box + (padding * 2)} {height_box + (padding * 2)}"
+            svg_content = f'<svg viewBox="{view_box_str}" width="100%" height="300" style="background:#000; border:1px solid #333; border-radius:5px;">' + "".join(svg_paths) + '</svg>'
+        else:
+            svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron líneas geométricas compatibles para renderizar en el visor.</p>'
         
-        svg_content = f'<svg viewBox="-100 -100 400 400" width="100%" height="250" style="background:#000; border:1px solid #333; border-radius:5px;">' + "".join(svg_paths[:200]) + '</svg>'
-        
-        # Cálculo de precio basado en espesor y material
+        # Cálculo de precio
         factor_espesor = float(espesor.replace("mm", "").replace(",", "."))
         precio_base = 4000 * factor_espesor
-        if "inox_316" in material:
+        if "inox" in material:
             precio_base *= 1.4
         elif "aluminum" in material:
             precio_base *= 1.3
+        elif "mdf" in material or "acrylic" in material:
+            precio_base *= 0.9
             
         total = precio_base + (line_count * 8) + (circle_count * 12)
         
