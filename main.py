@@ -193,12 +193,11 @@ HTML_TEMPLATE = """
             <div class="form-group">
                 <label for="material">Material:</label>
                 <select name="material" id="material">
-                    <option value="Acero Inoxidable 316/L">Acero Inoxidable 316/L</option>
-                    <option value="Acero Inoxidable 304">Acero Inoxidable 304</option>
-                    <option value="Acero al Carbono">Acero al Carbono</option>
-                    <option value="Aluminio">Aluminio</option>
                     <option value="MDF">MDF</option>
                     <option value="Acrílico">Acrílico</option>
+                    <option value="Acero al Carbono">Acero al Carbono</option>
+                    <option value="Acero Inoxidable">Acero Inoxidable</option>
+                    <option value="Aluminio">Aluminio</option>
                 </select>
             </div>
 
@@ -214,6 +213,7 @@ HTML_TEMPLATE = """
                     <option value="6 mm">6 mm</option>
                     <option value="8 mm">8 mm</option>
                     <option value="10 mm">10 mm</option>
+                    <option value="12 mm">12 mm</option>
                 </select>
             </div>
 
@@ -326,14 +326,11 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         doc = ezdxf.readfile(temp_file_path)
         msp = doc.modelspace()
         
-        # Conteo de entidades y cálculo de perforaciones / pinchazos (piercing)
         line_count = len(msp.query('LINE'))
         circle_count = len(msp.query('CIRCLE'))
         arc_count = len(msp.query('ARC'))
         lwpolyline_count = len(msp.query('LWPOLYLINE'))
         
-        # Cada elemento independiente o contorno suele requerir un "pinchazo" (piercing) inicial del láser
-        # Estimamos los pinchazos totales sumando círculos, arcos y polilíneas/bloques principales
         pinchazos_count = circle_count + arc_count + lwpolyline_count + max(1, int(line_count / 10))
         
         min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
@@ -361,37 +358,56 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             view_box_str = f"{min_x - padding} {-max_y - padding} {width_box + (padding * 2)} {height_box + (padding * 2)}"
             svg_content = f'<svg viewBox="{view_box_str}" width="100%" height="300" style="background:#000; border:1px solid #333; border-radius:5px;">' + "".join(svg_paths) + '</svg>'
             
-            # Cálculo de la superficie que ocupa el plano (Bounding Box en unidades del CAD, ej. mm cuadrados convertidos a m2 o factor de área)
-            # Ancho y Alto en mm -> Superficie en mm2, convertida a dm2 o m2 para cotizar costo de material por superficie
             area_mm2 = width_box * height_box
             area_m2 = area_mm2 / 1_000_000
         else:
             svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron líneas geométricas compatibles para renderizar en el visor.</p>'
             width_box, height_box, area_m2 = 0, 0, 0
         
-        # --- NUEVA / RECUPERADA LÓGICA DE CÁLCULO ---
-        factor_espesor = float(espesor.replace("mm", "").replace(" ", "").replace(",", "."))
+        # --- TABLA DE PRECIOS EXACTOS INGRESADA ---
+        # Extraer el valor numérico del espesor (ej: "1 mm" -> 1.0)
+        val_espesor = float(espesor.replace("mm", "").replace(" ", "").replace(",", "."))
         
-        # 1. Costo base de material por superficie ocupada (Bounding Box)
-        # Precio base por metro cuadrado según el espesor y material
-        tarifa_base_m2 = 25000 * factor_espesor
-        if "Inoxidable" in material:
-            tarifa_base_m2 *= 1.5
-        elif "Aluminio" in material:
-            tarifa_base_m2 *= 1.3
-        elif "MDF" in material or "Acrílico" in material:
-            tarifa_base_m2 *= 0.8
-            
-        costo_superficie = area_m2 * tarifa_base_m2
+        # Diccionario de tarifas base por m2 según material y espesor
+        tabla_precios = {
+            "MDF": {
+                1: 600, 2: 700, 3: 800, 5: 900, 8: 1000, 10: 1200
+            },
+            "Acrílico": {
+                1: 800, 2: 900, 3: 1000, 4: 1100, 5: 1200, 6: 1400, 8: 1600, 10: 1800
+            },
+            "Acero al Carbono": {
+                1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220
+            },
+            "Acero Inoxidable": {
+                1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220
+            },
+            "Aluminio": {
+                1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220
+            }
+        }
         
-        # 2. Costo por cantidad de líneas y perforaciones de corte
+        # Buscar la tarifa correspondiente, con un respaldo si el espesor exacto no está listado
+        tarifa_m2 = 5000  # Valor por defecto por si acaso
+        if material in tabla_precios:
+            espesores_disponibles = tabla_precios[material]
+            if val_espesor in espesores_disponibles:
+                tarifa_m2 = espesores_disponibles[val_espesor]
+            else:
+                # Buscar el espesor más cercano disponible
+                closest_esp = min(espesores_disponibles.keys(), key=lambda x: abs(x - val_espesor))
+                tarifa_m2 = espesores_disponibles[closest_esp]
+        
+        # 1. Costo de superficie según la tabla ingresada
+        costo_superficie = area_m2 * tarifa_m2
+        
+        # 2. Costo por cantidad de líneas y círculos de corte
         costo_corte = (line_count * 8) + (circle_count * 12)
         
-        # 3. Costo por cantidad de pinchazos (piercing) requeridos por el trabajo
+        # 3. Costo por cantidad de pinchazos (piercing)
         precio_por_pinchazo = 150
         costo_pinchazos = pinchazos_count * precio_por_pinchazo
         
-        # Total sumando superficie, desarrollo de corte y pinchazos (con un mínimo de setup si la pieza es muy chica)
         total = max(3000, costo_superficie + costo_corte + costo_pinchazos)
         
     except Exception as e:
@@ -428,7 +444,7 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             
             <div class="details-box">
                 <p style="margin: 4px 0;">📐 <strong>Dimensiones del plano:</strong> {width_box:.1f} mm x {height_box:.1f} mm ({area_m2:.4f} m²)</p>
-                <p style="margin: 4px 0;">⚡ <strong>Pinchazos (Piercing) calculados:</strong> {pinchazos_count} un.</p>
+                <p style="margin: 4px 0;">⚡ <strong>Pinchazos (Piercing) calculados:</strong> {pinchazos_count} un. (${precio_por_pinchazo} c/u)</p>
                 <p style="margin: 4px 0;">✂️ <strong>Geometría:</strong> {line_count} líneas, {circle_count} círculos.</p>
             </div>
             
