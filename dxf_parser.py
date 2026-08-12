@@ -42,7 +42,14 @@ def procesar_archivo_dxf(ruta_archivo):
     
     lineas_extraidas = []
     
-    # 1. Capturar entidades tipo LINE directas
+    # Imprimir cuántas entidades de cada tipo encuentra en el archivo
+    print(f"--- ANALIZANDO: {ruta_archivo} ---")
+    print(f"LINEAS directas: {len(msp.query('LINE'))}")
+    print(f"LWPOLYLINES: {len(msp.query('LWPOLYLINE'))}")
+    print(f"CIRCLES: {len(msp.query('CIRCLE'))}")
+    print(f"ARCS: {len(msp.query('ARC'))}")
+    
+    # 1. Capturar líneas
     for entity in msp.query('LINE'):
         lineas_extraidas.append({
             'x1': entity.dxf.start.x,
@@ -51,9 +58,10 @@ def procesar_archivo_dxf(ruta_archivo):
             'y2': entity.dxf.end.y
         })
         
-    # 2. Capturar entidades tipo LWPOLYLINE (muy común en círculos exportados como polígonos)
+    # 2. Capturar polilíneas de forma segura
     for polyl in msp.query('LWPOLYLINE'):
-        puntos_poly = list(polyl.get_points('xy'))
+        # Usamos get_points() con formato de coordenadas (x, y)
+        puntos_poly = [(p[0], p[1]) for p in polyl.get_points(format='xy[sez]')]
         for i in range(len(puntos_poly) - 1):
             lineas_extraidas.append({
                 'x1': puntos_poly[i][0],
@@ -61,7 +69,6 @@ def procesar_archivo_dxf(ruta_archivo):
                 'x2': puntos_poly[i+1][0],
                 'y2': puntos_poly[i+1][1]
             })
-        # Si la polilínea está cerrada, conectar el último punto con el primero
         if polyl.closed and len(puntos_poly) > 2:
             lineas_extraidas.append({
                 'x1': puntos_poly[-1][0],
@@ -70,7 +77,7 @@ def procesar_archivo_dxf(ruta_archivo):
                 'y2': puntos_poly[0][1]
             })
 
-    # 3. Si el archivo trae un CIRCLE o ARC nativo, podemos manejarlo directamente
+    # 3. Círculos nativos
     for circ in msp.query('CIRCLE'):
         radio = circ.dxf.radius
         centro = circ.dxf.center
@@ -82,7 +89,6 @@ def procesar_archivo_dxf(ruta_archivo):
             "area": math.pi * (radio ** 2)
         }
 
-    # 4. Intentar detectar si el conjunto de líneas/polilíneas forma un círculo discretizado
     geometria_circular = detectar_circulo_por_segmentos(lineas_extraidas)
     
     if geometria_circular:
