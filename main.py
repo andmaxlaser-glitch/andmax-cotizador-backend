@@ -13,7 +13,7 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "TU_API_KEY_DE_RESEND")
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 resend.api_key = RESEND_API_KEY
 
-# Interfaz principal con contador de carrito y diseño oscuro/rojo
+# Interfaz principal con carrito interactivo, visor, materiales y opciones de envío (Retiro / Correo)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
@@ -84,17 +84,105 @@ HTML_TEMPLATE = """
         button.btn-red:hover {
             background-color: #ff1a1a;
         }
+        button.btn-green {
+            background-color: #00cc44;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            font-weight: bold;
+            margin-top: 15px;
+            transition: background 0.3s;
+        }
+        button.btn-green:hover {
+            background-color: #00e64d;
+        }
         .cart-indicator {
             text-align: right;
             margin-bottom: 15px;
+        }
+        .cart-btn {
+            background: #1a1a1a;
             color: #00cc44;
+            border: 1px solid #00cc44;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
             font-weight: bold;
+            transition: background 0.3s;
+        }
+        .cart-btn:hover {
+            background: #00cc44;
+            color: #fff;
+        }
+        /* Modal del Carrito */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.8);
+        }
+        .modal-content {
+            background-color: #141414;
+            margin: 5% auto;
+            padding: 25px;
+            border: 1px solid #333;
+            width: 90%;
+            max-width: 650px;
+            border-radius: 10px;
+            color: #f1f1f1;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close:hover {
+            color: #ff3333;
+        }
+        .cart-item {
+            background: #1a1a1a;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 3px solid #00cc44;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .delete-btn {
+            background: #e60000;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .shipping-section {
+            background: #1a1a1a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border: 1px solid #333;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="cart-indicator">🛒 Ítems en el carrito: <span id="cart-count">0</span></div>
+        <div class="cart-indicator">
+            <button class="cart-btn" onclick="openCartModal()">🛒 Ver Carrito (<span id="cart-count">0</span>)</button>
+        </div>
         <h1>andmax.laser - Sistema de Cotización</h1>
         
         <form action="/cotizar" method="post" enctype="multipart/form-data">
@@ -134,10 +222,90 @@ HTML_TEMPLATE = """
         </form>
     </div>
 
+    <!-- Modal del Carrito -->
+    <div id="cartModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeCartModal()">&times;</span>
+            <h2 style="color: #00cc44; margin-top: 0;">Tu Carrito de Cortes</h2>
+            <div id="cart-items-container">
+                <!-- Se llena dinámicamente -->
+            </div>
+            <hr style="border-color: #333;">
+            
+            <div class="shipping-section">
+                <label><strong>Método de Entrega:</strong></label><br>
+                <input type="radio" id="retiro" name="shipping" value="0" checked onchange="updateCartUI()">
+                <label for="retiro" style="font-weight: normal; cursor: pointer;">Retiro en sucursal (Gratis)</label><br>
+                
+                <input type="radio" id="correo" name="shipping" value="5000" onchange="updateCartUI()" style="margin-top: 10px;">
+                <label for="correo" style="font-weight: normal; cursor: pointer;">Envío por correo (+$5.000 ARS)</label>
+            </div>
+
+            <h3 id="cart-total" style="text-align: right; color: #f1f1f1; margin-top: 20px;">Total: $0 ARS</h3>
+            <button class="btn-green" onclick="alert('Conectando con Mercado Pago...')">Pagar con Mercado Pago</button>
+        </div>
+    </div>
+
     <script>
-        // Actualizar contador en la página principal
-        const cart = JSON.parse(localStorage.getItem('andmax_cart')) || [];
-        document.getElementById('cart-count').innerText = cart.length;
+        function updateCartUI() {
+            const cart = JSON.parse(localStorage.getItem('andmax_cart')) || [];
+            document.getElementById('cart-count').innerText = cart.length;
+            
+            const container = document.getElementById('cart-items-container');
+            container.innerHTML = '';
+            
+            if (cart.length === 0) {
+                container.innerHTML = '<p style="color: #888; text-align: center;">El carrito está vacío.</p>';
+                document.getElementById('cart-total').innerText = 'Total: $0 ARS';
+                return;
+            }
+            
+            let subtotal = 0;
+            cart.forEach((item, index) => {
+                subtotal += item.price;
+                container.innerHTML += `
+                    <div class="cart-item">
+                        <div>
+                            <strong>${item.filename}</strong><br>
+                            <small style="color: #aaa;">${item.material} - ${item.espesor}</small><br>
+                            <span style="color: #00cc44; font-weight: bold;">$${item.price.toLocaleString('es-AR', {minimumFractionDigits: 2})}</span>
+                        </div>
+                        <button class="delete-btn" onclick="removeItem(${index})">❌</button>
+                    </div>
+                `;
+            });
+            
+            // Sumar envío si está seleccionado
+            const shippingCost = document.getElementById('correo').checked ? 5000 : 0;
+            const totalGeneral = subtotal + shippingCost;
+            
+            document.getElementById('cart-total').innerText = `Total: $${totalGeneral.toLocaleString('es-AR', {minimumFractionDigits: 2})} ARS`;
+        }
+
+        function openCartModal() {
+            updateCartUI();
+            document.getElementById('cartModal').style.display = 'block';
+        }
+
+        function closeCartModal() {
+            document.getElementById('cartModal').style.display = 'none';
+        }
+
+        function removeItem(index) {
+            let cart = JSON.parse(localStorage.getItem('andmax_cart')) || [];
+            cart.splice(index, 1);
+            localStorage.setItem('andmax_cart', JSON.stringify(cart));
+            updateCartUI();
+        }
+
+        window.onclick = function(event) {
+            const modal = document.getElementById('cartModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        updateCartUI();
     </script>
 </body>
 </html>
@@ -190,7 +358,6 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         else:
             svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron líneas geométricas compatibles para renderizar en el visor.</p>'
         
-        # Cálculo de precio base
         factor_espesor = float(espesor.replace("mm", "").replace(" ", "").replace(",", "."))
         precio_base = 4000 * factor_espesor
         if "Inoxidable" in material:
@@ -210,7 +377,6 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
     if os.path.exists(temp_file_path):
         os.remove(temp_file_path)
         
-    # Plantilla de resultado con JavaScript interactivo para guardar el ítem en el LocalStorage
     return HTMLResponse(content=f"""
     <!DOCTYPE html>
     <html lang="es">
