@@ -241,7 +241,7 @@ HTML_TEMPLATE = """
             </div>
 
             <h3 id="cart-total" style="text-align: right; color: #f1f1f1; margin-top: 20px;">Total: $0 ARS</h3>
-            <button class="btn-green" onclick="alert('Conectando con Mercado Pago...')">Pagar con Mercado Pago</button>
+            <button class="btn-green" onclick="pagarMercadoPago()">Pagar con Mercado Pago</button>
         </div>
     </div>
 
@@ -296,6 +296,33 @@ HTML_TEMPLATE = """
             updateCartUI();
         }
 
+        async function pagarMercadoPago() {
+            const cart = JSON.parse(localStorage.getItem('andmax_cart')) || [];
+            if (cart.length === 0) {
+                alert("El carrito está vacío.");
+                return;
+            }
+
+            const shippingCost = document.getElementById('correo').checked ? 5000 : 0;
+
+            try {
+                const response = await fetch('/crear-preferencia', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ items: cart, shipping: shippingCost })
+                });
+
+                const data = await response.json();
+                if (data.init_point) {
+                    window.location.href = data.init_point;
+                } else {
+                    alert("Error al generar el pago: " + (data.error || "Desconocido"));
+                }
+            } catch (error) {
+                alert("Error de red al conectar con Mercado Pago.");
+            }
+        }
+
         window.onclick = function(event) {
             const modal = document.getElementById('cartModal');
             if (event.target == modal) {
@@ -326,16 +353,13 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         doc = ezdxf.readfile(temp_file_path)
         msp = doc.modelspace()
         
-        # Conteo preciso para círculos y geometrías exactas
         circle_count = len(msp.query('CIRCLE'))
         arc_count = len(msp.query('ARC'))
         line_count = len(msp.query('LINE'))
         
-        # Si es un círculo solo, el diámetro define el bounding box (ancho y alto iguales)
         min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
         svg_paths = []
         
-        # Procesar círculos para el visor SVG y límites
         for entity in msp.query('CIRCLE'):
             try:
                 center = entity.dxf.center
@@ -349,7 +373,6 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             except Exception:
                 continue
 
-        # Procesar líneas por si acaso hay más elementos
         for entity in msp.query('LINE'):
             try:
                 start = entity.dxf.start
@@ -362,7 +385,6 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             except Exception:
                 continue
 
-        # Procesar arcos
         for entity in msp.query('ARC'):
             try:
                 center = entity.dxf.center
@@ -388,29 +410,16 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron geometrías compatibles para renderizar en el visor.</p>'
             width_box, height_box, area_m2 = 0, 0, 0
         
-        # --- CÁLCULO DE PINCHAZOS (PIERCING) Y LÍNEAS PARA UN CÍRCULO ---
-        # Un círculo solitario requiere exactamente 1 pinchazo (entrada del láser) y 0 líneas rectas.
         pinchazos_count = circle_count + arc_count + (1 if (circle_count > 0 or arc_count > 0 or line_count > 0) else 0)
         
-        # --- TABLA DE PRECIOS EXACTOS ---
         val_espesor = float(espesor.replace("mm", "").replace(" ", "").replace(",", "."))
         
         tabla_precios = {
-            "MDF": {
-                1: 600, 2: 700, 3: 800, 5: 900, 8: 1000, 10: 1200
-            },
-            "Acrílico": {
-                1: 800, 2: 900, 3: 1000, 4: 1100, 5: 1200, 6: 1400, 8: 1600, 10: 1800
-            },
-            "Acero al Carbono": {
-                1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220
-            },
-            "Acero Inoxidable": {
-                1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220
-            },
-            "Aluminio": {
-                1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220
-            }
+            "MDF": {1: 600, 2: 700, 3: 800, 5: 900, 8: 1000, 10: 1200},
+            "Acrílico": {1: 800, 2: 900, 3: 1000, 4: 1100, 5: 1200, 6: 1400, 8: 1600, 10: 1800},
+            "Acero al Carbono": {1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220},
+            "Acero Inoxidable": {1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220},
+            "Aluminio": {1: 8500, 2: 9350, 3: 10285, 4: 11313, 5: 12444, 6: 13689, 8: 15058, 10: 16564, 12: 18220}
         }
         
         tarifa_m2 = 5000
@@ -427,7 +436,13 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         precio_por_pinchazo = 150
         costo_pinchazos = pinchazos_count * precio_por_pinchazo
         
-        total = max(3000, costo_superficie + costo_corte + costo_pinchazos)
+        # --- LÓGICA DE PRECIO MÍNIMO DIFERENCIADO ---
+        if material in ["MDF", "Acrílico"]:
+            precio_minimo = 1500
+        else:
+            precio_minimo = 3000
+            
+        total = max(precio_minimo, costo_superficie + costo_corte + costo_pinchazos)
         
     except Exception as e:
         if os.path.exists(temp_file_path):
@@ -498,6 +513,51 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
     </body>
     </html>
     """)
+
+@app.post("/crear-preferencia")
+async def crear_preferencia(request: Request):
+    data = await request.json()
+    items_carrito = data.get("items", [])
+    costo_envio = data.get("shipping", 0)
+
+    if not items_carrito:
+        return JSONResponse(content={"error": "El carrito está vacío"}, status_code=400)
+
+    mp_items = []
+    for item in items_carrito:
+        mp_items.append({
+            "title": f"Corte Laser: {item['filename']} ({item['material']} {item['espesor']})",
+            "quantity": 1,
+            "unit_price": float(item['price'])
+        })
+
+    if costo_envio > 0:
+        mp_items.append({
+            "title": "Envío por correo",
+            "quantity": 1,
+            "unit_price": float(costo_envio)
+        })
+
+    preference_data = {
+        "items": mp_items,
+        "back_urls": {
+            "success": "https://tu-dominio.com/", # Reemplaza con tu URL real si lo subes a producción
+            "failure": "https://tu-dominio.com/",
+            "pending": "https://tu-dominio.com/"
+        },
+        "auto_return": "approved"
+    }
+
+    try:
+        preference_response = sdk.preference().create(preference_data)
+        resultado = preference_response.get("response")
+        
+        if not resultado or "init_point" not in resultado:
+            return JSONResponse(content={"error": "No se pudo generar la preferencia en Mercado Pago"}, status_code=500)
+            
+        return JSONResponse(content={"init_point": resultado["init_point"]})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 @app.post("/webhook")
 async def mercado_pago_webhook(request: Request):
