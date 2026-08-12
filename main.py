@@ -358,8 +358,12 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         else:
             svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron líneas geométricas compatibles para renderizar en el visor.</p>'
         
+        # --- LÓGICA DE CÁLCULO DE PRECIO ANTERIOR ---
+        # 1. Factor de espesor (ej: 4000 * mm)
         factor_espesor = float(espesor.replace("mm", "").replace(" ", "").replace(",", "."))
         precio_base = 4000 * factor_espesor
+        
+        # 2. Multiplicador según el tipo de material seleccionado
         if "Inoxidable" in material:
             precio_base *= 1.4
         elif "Aluminio" in material:
@@ -367,6 +371,7 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         elif "MDF" in material or "Acrílico" in material:
             precio_base *= 0.9
             
+        # 3. Costo según complejidad de la geometría (cantidades de líneas y círculos detectadas en el DXF)
         total = precio_base + (line_count * 8) + (circle_count * 12)
         
     except Exception as e:
@@ -398,7 +403,9 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         <div class="container">
             <h2>Resultado de tu Cotización</h2>
             <p><strong>Archivo:</strong> {file.filename}</p>
-            <p><strong>Material:</strong> {material} | <strong>Espesor:</strong> {espesor}</p>
+            <p><strong>Materiales configurados:</strong> Acero Inoxidable (316/L, 304), Acero al Carbono, Aluminio, MDF, Acrílico.</p>
+            <p><strong>Espesores:</strong> Desde 1 mm hasta 10 mm.</p>
+            <p><strong>Cálculo de corte:</strong> $8 por línea detectada y $12 por círculo detectado en el archivo DXF.</p>
             
             <div class="visor-container">
                 <p style="text-align: left; margin-bottom: 5px;"><strong>Visor DXF (Previsualización):</strong></p>
