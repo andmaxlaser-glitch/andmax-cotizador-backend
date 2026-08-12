@@ -326,27 +326,51 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
         doc = ezdxf.readfile(temp_file_path)
         msp = doc.modelspace()
         
-        line_count = len(msp.query('LINE'))
+        # Conteo preciso para círculos y geometrías exactas
         circle_count = len(msp.query('CIRCLE'))
         arc_count = len(msp.query('ARC'))
-        lwpolyline_count = len(msp.query('LWPOLYLINE'))
+        line_count = len(msp.query('LINE'))
         
-        pinchazos_count = circle_count + arc_count + lwpolyline_count + max(1, int(line_count / 10))
-        
+        # Si es un círculo solo, el diámetro define el bounding box (ancho y alto iguales)
         min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
         svg_paths = []
         
+        # Procesar círculos para el visor SVG y límites
+        for entity in msp.query('CIRCLE'):
+            try:
+                center = entity.dxf.center
+                radius = entity.dxf.radius
+                min_x = min(min_x, center.x - radius)
+                max_x = max(max_x, center.x + radius)
+                min_y = min(min_y, center.y - radius)
+                max_y = max(max_y, center.y + radius)
+                
+                svg_paths.append(f'<circle cx="{center.x}" cy="{-center.y}" r="{radius}" stroke="#ff3333" stroke-width="2" fill="none"/>')
+            except Exception:
+                continue
+
+        # Procesar líneas por si acaso hay más elementos
         for entity in msp.query('LINE'):
             try:
                 start = entity.dxf.start
                 end = entity.dxf.end
-                
                 min_x = min(min_x, start.x, end.x)
                 max_x = max(max_x, start.x, end.x)
                 min_y = min(min_y, start.y, end.y)
                 max_y = max(max_y, start.y, end.y)
-                
                 svg_paths.append(f'<line x1="{start.x}" y1="{-start.y}" x2="{end.x}" y2="{-end.y}" stroke="#ff3333" stroke-width="2"/>')
+            except Exception:
+                continue
+
+        # Procesar arcos
+        for entity in msp.query('ARC'):
+            try:
+                center = entity.dxf.center
+                radius = entity.dxf.radius
+                min_x = min(min_x, center.x - radius)
+                max_x = max(max_x, center.x + radius)
+                min_y = min(min_y, center.y - radius)
+                max_y = max(max_y, center.y + radius)
             except Exception:
                 continue
 
@@ -361,14 +385,16 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             area_mm2 = width_box * height_box
             area_m2 = area_mm2 / 1_000_000
         else:
-            svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron líneas geométricas compatibles para renderizar en el visor.</p>'
+            svg_content = '<p style="color: #ff3333; text-align:center;">No se detectaron geometrías compatibles para renderizar en el visor.</p>'
             width_box, height_box, area_m2 = 0, 0, 0
         
-        # --- TABLA DE PRECIOS EXACTOS INGRESADA ---
-        # Extraer el valor numérico del espesor (ej: "1 mm" -> 1.0)
+        # --- CÁLCULO DE PINCHAZOS (PIERCING) Y LÍNEAS PARA UN CÍRCULO ---
+        # Un círculo solitario requiere exactamente 1 pinchazo (entrada del láser) y 0 líneas rectas.
+        pinchazos_count = circle_count + arc_count + (1 if (circle_count > 0 or arc_count > 0 or line_count > 0) else 0)
+        
+        # --- TABLA DE PRECIOS EXACTOS ---
         val_espesor = float(espesor.replace("mm", "").replace(" ", "").replace(",", "."))
         
-        # Diccionario de tarifas base por m2 según material y espesor
         tabla_precios = {
             "MDF": {
                 1: 600, 2: 700, 3: 800, 5: 900, 8: 1000, 10: 1200
@@ -387,24 +413,17 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             }
         }
         
-        # Buscar la tarifa correspondiente, con un respaldo si el espesor exacto no está listado
-        tarifa_m2 = 5000  # Valor por defecto por si acaso
+        tarifa_m2 = 5000
         if material in tabla_precios:
             espesores_disponibles = tabla_precios[material]
             if val_espesor in espesores_disponibles:
                 tarifa_m2 = espesores_disponibles[val_espesor]
             else:
-                # Buscar el espesor más cercano disponible
                 closest_esp = min(espesores_disponibles.keys(), key=lambda x: abs(x - val_espesor))
                 tarifa_m2 = espesores_disponibles[closest_esp]
         
-        # 1. Costo de superficie según la tabla ingresada
         costo_superficie = area_m2 * tarifa_m2
-        
-        # 2. Costo por cantidad de líneas y círculos de corte
         costo_corte = (line_count * 8) + (circle_count * 12)
-        
-        # 3. Costo por cantidad de pinchazos (piercing)
         precio_por_pinchazo = 150
         costo_pinchazos = pinchazos_count * precio_por_pinchazo
         
@@ -444,8 +463,8 @@ async def cotizar(file: UploadFile = File(...), material: str = Form(...), espes
             
             <div class="details-box">
                 <p style="margin: 4px 0;">📐 <strong>Dimensiones del plano:</strong> {width_box:.1f} mm x {height_box:.1f} mm ({area_m2:.4f} m²)</p>
-                <p style="margin: 4px 0;">⚡ <strong>Pinchazos (Piercing) calculados:</strong> {pinchazos_count} un. (${precio_por_pinchazo} c/u)</p>
-                <p style="margin: 4px 0;">✂️ <strong>Geometría:</strong> {line_count} líneas, {circle_count} círculos.</p>
+                <p style="margin: 4px 0;">⚡ <strong>Pinchazos (Piercing):</strong> {pinchazos_count} un. (${precio_por_pinchazo} c/u)</p>
+                <p style="margin: 4px 0;">✂️ <strong>Geometría:</strong> {circle_count} círculos, {line_count} líneas.</p>
             </div>
             
             <div class="visor-container">
